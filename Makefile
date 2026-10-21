@@ -1,8 +1,9 @@
 GOBIN := $(shell go env GOPATH)/bin
 BUF := $(GOBIN)/buf
+DATABASE_URL ?= postgres://notif:notif@localhost:5433/notif?sslmode=disable
 
 .DEFAULT_GOAL := build
-.PHONY: tools gen build test vet tidy
+.PHONY: tools gen build test test-pg vet tidy db-up db-down db-migrate
 
 tools:
 	go install github.com/bufbuild/buf/cmd/buf@latest
@@ -18,10 +19,25 @@ build:
 	go build ./...
 
 test:
-	go test ./...
+	go test -race ./...
+
+test-pg:
+	DATABASE_URL='$(DATABASE_URL)' go test -race ./...
 
 vet:
 	go vet ./...
 
 tidy:
 	go mod tidy
+
+db-up:
+	docker compose up -d --wait postgres
+
+db-down:
+	docker compose down
+
+db-migrate:
+	@for f in migrations/*.sql; do \
+		echo "applying $$f"; \
+		docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U notif -d notif < $$f || exit 1; \
+	done

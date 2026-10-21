@@ -25,7 +25,9 @@ University project (Backend for High-Load Environments). Go service implementing
 
 ## Workflow
 - Work in phases; only do what the current phase asks. Stop and report at the end of each phase (what changed, commands run, results).
-- `make gen` regenerates code; `make test` must pass before finishing a phase.
+- `make gen` regenerates code; `make test` (`go test -race ./...`) must pass before finishing a phase.
+- Postgres: `make db-up db-migrate` starts it on localhost:5433 and applies `migrations/*.sql`; `make test-pg` runs tests with `DATABASE_URL` set (Postgres tests skip without it); `make db-down` stops it.
+- Store behaviour is covered by the shared suite `internal/store/storetest`; every Store implementation must pass it.
 - Commit at the end of each phase with a clear message.
 
 ## Not in SIS #2 scope
