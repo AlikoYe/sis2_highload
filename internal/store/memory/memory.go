@@ -12,10 +12,32 @@ import (
 type Store struct {
 	mu   sync.Mutex
 	data map[string]map[domain.Channel]domain.Delivery
+
+	// Optional FIFO cap so long benchmarks do not grow the heap without bound.
+	maxEvents int
+	order     []string
+	next      int
 }
 
-func New() *Store {
-	return &Store{data: make(map[string]map[domain.Channel]domain.Delivery)}
+func New() *Store { return NewBounded(0) }
+
+// NewBounded keeps at most maxEvents events, evicting the oldest first; 0 means unbounded.
+// Idempotency then only holds for the most recent maxEvents events.
+func NewBounded(maxEvents int) *Store {
+	return &Store{data: make(map[string]map[domain.Channel]domain.Delivery), maxEvents: maxEvents}
+}
+
+func (s *Store) track(id string) {
+	if s.maxEvents <= 0 {
+		return
+	}
+	if len(s.order) < s.maxEvents {
+		s.order = append(s.order, id)
+		return
+	}
+	delete(s.data, s.order[s.next])
+	s.order[s.next] = id
+	s.next = (s.next + 1) % s.maxEvents
 }
 
 func (s *Store) CreateDeliveries(ctx context.Context, items []service.NewEvent) ([]domain.Result, error) {
@@ -32,6 +54,7 @@ func (s *Store) CreateDeliveries(ctx context.Context, items []service.NewEvent) 
 		if byChannel == nil {
 			byChannel = make(map[domain.Channel]domain.Delivery, len(it.Channels))
 			s.data[id] = byChannel
+			s.track(id)
 		}
 		ds := make([]domain.Delivery, 0, len(it.Channels))
 		for _, ch := range it.Channels {

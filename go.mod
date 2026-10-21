@@ -3,6 +3,7 @@ module sis2_highload
 go 1.26.4
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.4.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	google.golang.org/grpc v1.84.0

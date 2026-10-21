@@ -1,0 +1,4 @@
+label,server_cpu_ms,duration_s
+sample-mem-grpc-publish-small-c64,106440,30.0
+sample-mem-rest-publish-small-c64,130580,30.0
+sample-mem-h2c-publish-small-c64,90380,30.0

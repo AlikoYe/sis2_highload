@@ -1,0 +1,10 @@
+label,server_cpu_ms,duration_s
+mem-grpc-publish-small-c1-r1,4620,5.0
+mem-grpc-publish-small-c64-r1,17380,5.0
+mem-grpc-open1000-r1,800,5.0
+mem-rest-publish-small-c1-r1,3950,5.0
+mem-rest-publish-small-c64-r1,21540,5.0
+mem-rest-open1000-r1,640,5.0
+mem-h2c-publish-small-c1-r1,5640,5.0
+mem-h2c-publish-small-c64-r1,15000,5.0
+mem-h2c-open1000-r1,1010,5.0

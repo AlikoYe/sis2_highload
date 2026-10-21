@@ -10,3 +10,4 @@ coverage.*
 results/*.tmp
 .DS_Store
 .idea/
+results/logs/

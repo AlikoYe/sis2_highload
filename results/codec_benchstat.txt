@@ -1,0 +1,87 @@
+goos: darwin
+goarch: arm64
+pkg: sis2_highload/internal/workload
+cpu: Apple M4 Pro
+                                │ results/codec_bench.txt │
+                                │         sec/op          │
+ProtoMarshalRequest/small-12                 310.4n ±  1%
+ProtoMarshalRequest/large-12                 1.492µ ±  1%
+ProtoMarshalRequest/batch-12                 28.25µ ±  1%
+ProtoMarshalResponse/small-12                68.19n ±  1%
+ProtoMarshalResponse/large-12                96.12n ±  0%
+ProtoMarshalResponse/batch-12                5.264µ ±  1%
+ProtoUnmarshalRequest/small-12               405.2n ±  2%
+ProtoUnmarshalRequest/large-12               1.671µ ±  1%
+ProtoUnmarshalRequest/batch-12               31.91µ ±  0%
+ProtoUnmarshalResponse/small-12              150.9n ±  1%
+ProtoUnmarshalResponse/large-12              203.7n ±  1%
+ProtoUnmarshalResponse/batch-12              10.57µ ±  2%
+JSONMarshalRequest/small-12                  357.7n ±  1%
+JSONMarshalRequest/large-12                  2.865µ ± 12%
+JSONMarshalRequest/batch-12                  34.42µ ±  1%
+JSONMarshalResponse/small-12                 136.4n ±  1%
+JSONMarshalResponse/large-12                 189.5n ±  1%
+JSONMarshalResponse/batch-12                 10.47µ ±  1%
+JSONUnmarshalRequest/small-12                1.075µ ±  2%
+JSONUnmarshalRequest/large-12                12.33µ ±  0%
+JSONUnmarshalRequest/batch-12                100.0µ ±  1%
+JSONUnmarshalResponse/small-12               832.3n ±  1%
+JSONUnmarshalResponse/large-12               1.228µ ±  1%
+JSONUnmarshalResponse/batch-12               72.88µ ±  0%
+geomean                                      1.861µ
+
+                                │ results/codec_bench.txt │
+                                │          B/op           │
+ProtoMarshalRequest/small-12                   160.0 ± 0%
+ProtoMarshalRequest/large-12                 4.500Ki ± 0%
+ProtoMarshalRequest/batch-12                 15.50Ki ± 0%
+ProtoMarshalResponse/small-12                  48.00 ± 0%
+ProtoMarshalResponse/large-12                  64.00 ± 0%
+ProtoMarshalResponse/batch-12                4.750Ki ± 0%
+ProtoUnmarshalRequest/small-12                 832.0 ± 0%
+ProtoUnmarshalRequest/large-12               4.898Ki ± 0%
+ProtoUnmarshalRequest/batch-12               64.74Ki ± 0%
+ProtoUnmarshalResponse/small-12                280.0 ± 0%
+ProtoUnmarshalResponse/large-12                360.0 ± 0%
+ProtoUnmarshalResponse/batch-12              21.77Ki ± 0%
+JSONMarshalRequest/small-12                    288.0 ± 0%
+JSONMarshalRequest/large-12                  4.614Ki ± 0%
+JSONMarshalRequest/batch-12                  30.88Ki ± 0%
+JSONMarshalResponse/small-12                   128.0 ± 0%
+JSONMarshalResponse/large-12                   176.0 ± 0%
+JSONMarshalResponse/batch-12                 12.01Ki ± 0%
+JSONUnmarshalRequest/small-12                  760.0 ± 0%
+JSONUnmarshalRequest/large-12                4.508Ki ± 0%
+JSONUnmarshalRequest/batch-12                64.93Ki ± 0%
+JSONUnmarshalResponse/small-12                 456.0 ± 0%
+JSONUnmarshalResponse/large-12                 544.0 ± 0%
+JSONUnmarshalResponse/batch-12               23.02Ki ± 0%
+geomean                                      1.778Ki
+
+                                │ results/codec_bench.txt │
+                                │        allocs/op        │
+ProtoMarshalRequest/small-12                   5.000 ± 0%
+ProtoMarshalRequest/large-12                   33.00 ± 0%
+ProtoMarshalRequest/batch-12                   401.0 ± 0%
+ProtoMarshalResponse/small-12                  1.000 ± 0%
+ProtoMarshalResponse/large-12                  1.000 ± 0%
+ProtoMarshalResponse/batch-12                  1.000 ± 0%
+ProtoUnmarshalRequest/small-12                 15.00 ± 0%
+ProtoUnmarshalRequest/large-12                 57.00 ± 0%
+ProtoUnmarshalRequest/batch-12                1.210k ± 0%
+ProtoUnmarshalResponse/small-12                5.000 ± 0%
+ProtoUnmarshalResponse/large-12                7.000 ± 0%
+ProtoUnmarshalResponse/batch-12                410.0 ± 0%
+JSONMarshalRequest/small-12                    5.000 ± 0%
+JSONMarshalRequest/large-12                    19.00 ± 0%
+JSONMarshalRequest/batch-12                    501.0 ± 0%
+JSONMarshalResponse/small-12                   1.000 ± 0%
+JSONMarshalResponse/large-12                   1.000 ± 0%
+JSONMarshalResponse/batch-12                   1.000 ± 0%
+JSONUnmarshalRequest/small-12                  14.00 ± 0%
+JSONUnmarshalRequest/large-12                  35.00 ± 0%
+JSONUnmarshalRequest/batch-12                  816.0 ± 0%
+JSONUnmarshalResponse/small-12                 12.00 ± 0%
+JSONUnmarshalResponse/large-12                 15.00 ± 0%
+JSONUnmarshalResponse/batch-12                 418.0 ± 0%
+geomean                                        18.04

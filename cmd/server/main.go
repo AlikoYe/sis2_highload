@@ -28,6 +28,7 @@ type config struct {
 	store      string
 	dbURL      string
 	dbMaxConns int
+	memMax     int
 	grpcAddr   string
 	httpAddr   string
 	h2cAddr    string
@@ -59,6 +60,7 @@ func parseConfig() (config, error) {
 	flag.StringVar(&cfg.store, "store", envOr("STORE", "memory"), "store backend: memory|postgres (env STORE)")
 	flag.StringVar(&cfg.dbURL, "db-url", os.Getenv("DATABASE_URL"), "Postgres DSN (env DATABASE_URL)")
 	flag.IntVar(&cfg.dbMaxConns, "db-max-conns", envInt("DB_MAX_CONNS", 20), "Postgres pool size (env DB_MAX_CONNS)")
+	flag.IntVar(&cfg.memMax, "memory-max-events", envInt("MEMORY_MAX_EVENTS", 0), "memory store: keep only the newest N events, 0 = unbounded (env MEMORY_MAX_EVENTS)")
 	flag.StringVar(&cfg.grpcAddr, "grpc-addr", envOr("GRPC_ADDR", ":50051"), "gRPC listen address (env GRPC_ADDR)")
 	flag.StringVar(&cfg.httpAddr, "http-addr", envOr("HTTP_ADDR", ":8080"), "REST HTTP/1.1 listen address (env HTTP_ADDR)")
 	flag.StringVar(&cfg.h2cAddr, "h2c-addr", os.Getenv("H2C_ADDR"), "REST over cleartext HTTP/2 listen address, empty disables (env H2C_ADDR)")
@@ -171,7 +173,7 @@ func run(cfg config, log *slog.Logger) error {
 
 func openStore(ctx context.Context, cfg config) (store, func(), error) {
 	if cfg.store == "memory" {
-		return memory.New(), func() {}, nil
+		return memory.NewBounded(cfg.memMax), func() {}, nil
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.dbURL)
 	if err != nil {
