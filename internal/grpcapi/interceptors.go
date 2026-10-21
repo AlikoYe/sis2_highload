@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
+
+	pb "sis2_highload/gen/notifications/v1"
+	"sis2_highload/internal/faults"
 )
 
 // deadlineInterceptor applies def when the caller sent no deadline and caps longer ones at max.
@@ -35,5 +39,24 @@ func recoveryInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 			}
 		}()
 		return next(ctx, req)
+	}
+}
+
+// faultInterceptor injects faults into NotificationService RPCs only, never health checks.
+// Injected errors are not logged: they are expected and would flood the log under load.
+func faultInterceptor(inj *faults.Injector) grpc.UnaryServerInterceptor {
+	prefix := "/" + pb.NotificationService_ServiceDesc.ServiceName + "/"
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
+		if inj == nil || !strings.HasPrefix(info.FullMethod, prefix) {
+			return next(ctx, req)
+		}
+		if err := inj.Before(ctx); err != nil {
+			return nil, toStatus(err)
+		}
+		resp, err := next(ctx, req)
+		if err == nil && inj.LoseResponse() {
+			return nil, toStatus(faults.ErrLostResponse)
+		}
+		return resp, err
 	}
 }

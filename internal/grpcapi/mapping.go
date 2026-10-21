@@ -3,6 +3,8 @@ package grpcapi
 import (
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	pb "sis2_highload/gen/notifications/v1"
 	"sis2_highload/internal/domain"
 )
@@ -20,7 +22,20 @@ var statusToProto = map[domain.Status]pb.DeliveryStatus{
 	domain.StatusFailed:  pb.DeliveryStatus_DELIVERY_STATUS_FAILED,
 }
 
-func eventFromProto(e *pb.Event) domain.Event {
+var (
+	channelFromProto = invert(channelToProto)
+	statusFromProto  = invert(statusToProto)
+)
+
+func invert[K, V comparable](m map[K]V) map[V]K {
+	out := make(map[V]K, len(m))
+	for k, v := range m {
+		out[v] = k
+	}
+	return out
+}
+
+func EventFromProto(e *pb.Event) domain.Event {
 	var occurredAt time.Time
 	if e.GetOccurredAt() != nil {
 		occurredAt = e.GetOccurredAt().AsTime()
@@ -34,7 +49,15 @@ func eventFromProto(e *pb.Event) domain.Event {
 	}
 }
 
-func deliveriesToProto(ds []domain.Delivery) []*pb.Delivery {
+func EventToProto(e domain.Event) *pb.Event {
+	out := &pb.Event{EventId: e.ID, Type: e.Type, UserId: e.UserID, Payload: e.Payload}
+	if !e.OccurredAt.IsZero() {
+		out.OccurredAt = timestamppb.New(e.OccurredAt)
+	}
+	return out
+}
+
+func DeliveriesToProto(ds []domain.Delivery) []*pb.Delivery {
 	out := make([]*pb.Delivery, len(ds))
 	for i, d := range ds {
 		out[i] = &pb.Delivery{
@@ -46,6 +69,19 @@ func deliveriesToProto(ds []domain.Delivery) []*pb.Delivery {
 	return out
 }
 
-func publishResponse(r domain.Result) *pb.PublishResponse {
-	return &pb.PublishResponse{EventId: r.EventID, Deliveries: deliveriesToProto(r.Deliveries)}
+func ResultFromProto(eventID string, ds []*pb.Delivery) domain.Result {
+	out := make([]domain.Delivery, len(ds))
+	for i, d := range ds {
+		out[i] = domain.Delivery{
+			EventID:  eventID,
+			Channel:  channelFromProto[d.GetChannel()],
+			Status:   statusFromProto[d.GetStatus()],
+			Attempts: d.GetAttempts(),
+		}
+	}
+	return domain.NewResult(eventID, out)
+}
+
+func PublishResponse(r domain.Result) *pb.PublishResponse {
+	return &pb.PublishResponse{EventId: r.EventID, Deliveries: DeliveriesToProto(r.Deliveries)}
 }

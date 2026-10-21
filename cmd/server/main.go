@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"sis2_highload/internal/faults"
 	"sis2_highload/internal/grpcapi"
 	"sis2_highload/internal/httpapi"
 	"sis2_highload/internal/service"
@@ -31,6 +32,7 @@ type config struct {
 	httpAddr   string
 	h2cAddr    string
 	logLevel   slog.Level
+	faults     faults.Config
 }
 
 type store interface {
@@ -61,8 +63,15 @@ func parseConfig() (config, error) {
 	flag.StringVar(&cfg.httpAddr, "http-addr", envOr("HTTP_ADDR", ":8080"), "REST HTTP/1.1 listen address (env HTTP_ADDR)")
 	flag.StringVar(&cfg.h2cAddr, "h2c-addr", os.Getenv("H2C_ADDR"), "REST over cleartext HTTP/2 listen address, empty disables (env H2C_ADDR)")
 	flag.StringVar(&level, "log-level", envOr("LOG_LEVEL", "info"), "debug|info|warn|error (env LOG_LEVEL)")
+	flag.Float64Var(&cfg.faults.FailBefore, "fault-fail-before", envFloat("FAULT_FAIL_BEFORE", 0), "probability of failing a request before the service (env FAULT_FAIL_BEFORE)")
+	flag.Float64Var(&cfg.faults.FailAfter, "fault-fail-after", envFloat("FAULT_FAIL_AFTER", 0), "probability of discarding a committed response (env FAULT_FAIL_AFTER)")
+	flag.DurationVar(&cfg.faults.Latency, "fault-latency", envDuration("FAULT_LATENCY", 0), "added latency per request (env FAULT_LATENCY)")
+	flag.DurationVar(&cfg.faults.LatencyJitter, "fault-latency-jitter", envDuration("FAULT_LATENCY_JITTER", 0), "extra random latency in [0, jitter] (env FAULT_LATENCY_JITTER)")
 	flag.Parse()
 
+	if err := cfg.faults.Validate(); err != nil {
+		return cfg, err
+	}
 	if err := cfg.logLevel.UnmarshalText([]byte(level)); err != nil {
 		return cfg, fmt.Errorf("invalid -log-level: %w", err)
 	}
@@ -89,9 +98,16 @@ func run(cfg config, log *slog.Logger) error {
 	defer closeStore()
 	log.Info("store ready", "store", cfg.store)
 
+	inj := faults.New(cfg.faults)
+	if inj != nil {
+		log.Warn("fault injection enabled",
+			"fail_before", cfg.faults.FailBefore, "fail_after", cfg.faults.FailAfter,
+			"latency", cfg.faults.Latency.String(), "latency_jitter", cfg.faults.LatencyJitter.String())
+	}
+
 	svc := service.New(st)
-	grpcSrv, health := grpcapi.New(svc, log)
-	handler := httpapi.New(svc, st, log)
+	grpcSrv, health := grpcapi.New(svc, log, inj)
+	handler := httpapi.New(svc, st, log, inj)
 
 	grpcLis, err := net.Listen("tcp", cfg.grpcAddr)
 	if err != nil {
@@ -212,6 +228,20 @@ func envOr(key, def string) string {
 func envInt(key string, def int) int {
 	if n, err := strconv.Atoi(os.Getenv(key)); err == nil {
 		return n
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if f, err := strconv.ParseFloat(os.Getenv(key), 64); err == nil {
+		return f
+	}
+	return def
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil {
+		return d
 	}
 	return def
 }

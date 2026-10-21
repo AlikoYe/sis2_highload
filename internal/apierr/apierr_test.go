@@ -40,3 +40,20 @@ func TestOf(t *testing.T) {
 		})
 	}
 }
+
+func TestInverse(t *testing.T) {
+	for _, row := range table {
+		if got := FromGRPC(row.m.GRPC); got != row.target {
+			t.Errorf("FromGRPC(%v) = %v, want %v", row.m.GRPC, got, row.target)
+		}
+		if got := FromHTTP(row.m.HTTP); got != row.target {
+			t.Errorf("FromHTTP(%d) = %v, want %v", row.m.HTTP, got, row.target)
+		}
+		if back := Of(row.target); back != row.m {
+			t.Errorf("Of(FromX(%v)) does not round-trip", row.target)
+		}
+	}
+	if FromGRPC(codes.Internal) != ErrInternal || FromHTTP(500) != ErrInternal || FromHTTP(502) != ErrInternal {
+		t.Error("internal and unknown statuses should map to ErrInternal")
+	}
+}

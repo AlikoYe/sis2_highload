@@ -54,6 +54,29 @@ var table = []struct {
 	{domain.ErrUnavailable, unavailable},
 }
 
+// ErrInternal is what clients get back for INTERNAL or any status outside the table.
+var ErrInternal = errors.New("internal server error")
+
+// FromGRPC inverts the table for clients: it returns the sentinel a gRPC code stands for.
+func FromGRPC(c codes.Code) error {
+	for _, row := range table {
+		if row.m.GRPC == c {
+			return row.target
+		}
+	}
+	return ErrInternal
+}
+
+// FromHTTP inverts the table for clients: it returns the sentinel an HTTP error status stands for.
+func FromHTTP(status int) error {
+	for _, row := range table {
+		if row.m.HTTP == status {
+			return row.target
+		}
+	}
+	return ErrInternal
+}
+
 func Of(err error) Mapping {
 	for _, row := range table {
 		if errors.Is(err, row.target) {

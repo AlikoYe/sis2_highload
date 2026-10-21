@@ -15,6 +15,7 @@ import (
 	pb "sis2_highload/gen/notifications/v1"
 	"sis2_highload/internal/apierr"
 	"sis2_highload/internal/domain"
+	"sis2_highload/internal/faults"
 	"sis2_highload/internal/service"
 )
 
@@ -30,10 +31,14 @@ type handler struct {
 }
 
 // New builds a gRPC server with the notification and health services registered.
-// Health starts NOT_SERVING; call SetServing once listeners are up.
-func New(svc *service.Service, log *slog.Logger) (*grpc.Server, *health.Server) {
+// Health starts NOT_SERVING; call SetServing once listeners are up. inj may be nil.
+func New(svc *service.Service, log *slog.Logger, inj *faults.Injector) (*grpc.Server, *health.Server) {
 	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(recoveryInterceptor(log), deadlineInterceptor(DefaultTimeout, MaxTimeout)),
+		grpc.ChainUnaryInterceptor(
+			recoveryInterceptor(log),
+			deadlineInterceptor(DefaultTimeout, MaxTimeout),
+			faultInterceptor(inj),
+		),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 5 * time.Minute,
 			Time:              time.Minute,
@@ -65,11 +70,11 @@ func (h *handler) Publish(ctx context.Context, req *pb.PublishRequest) (*pb.Publ
 	if req.GetEvent() == nil {
 		return nil, statusError(ctx, h.log, fmt.Errorf("%w: event is required", domain.ErrInvalidArgument))
 	}
-	res, err := h.svc.Publish(ctx, eventFromProto(req.GetEvent()))
+	res, err := h.svc.Publish(ctx, EventFromProto(req.GetEvent()))
 	if err != nil {
 		return nil, statusError(ctx, h.log, err)
 	}
-	return publishResponse(res), nil
+	return PublishResponse(res), nil
 }
 
 func (h *handler) PublishBatch(ctx context.Context, req *pb.PublishBatchRequest) (*pb.PublishBatchResponse, error) {
@@ -78,7 +83,7 @@ func (h *handler) PublishBatch(ctx context.Context, req *pb.PublishBatchRequest)
 		if e == nil {
 			return nil, statusError(ctx, h.log, fmt.Errorf("events[%d]: %w: event is required", i, domain.ErrInvalidArgument))
 		}
-		events[i] = eventFromProto(e)
+		events[i] = EventFromProto(e)
 	}
 	results, err := h.svc.PublishBatch(ctx, events)
 	if err != nil {
@@ -86,7 +91,7 @@ func (h *handler) PublishBatch(ctx context.Context, req *pb.PublishBatchRequest)
 	}
 	out := make([]*pb.PublishResponse, len(results))
 	for i, r := range results {
-		out[i] = publishResponse(r)
+		out[i] = PublishResponse(r)
 	}
 	return &pb.PublishBatchResponse{Results: out}, nil
 }
@@ -96,13 +101,17 @@ func (h *handler) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.
 	if err != nil {
 		return nil, statusError(ctx, h.log, err)
 	}
-	return &pb.GetStatusResponse{EventId: res.EventID, Deliveries: deliveriesToProto(res.Deliveries)}, nil
+	return &pb.GetStatusResponse{EventId: res.EventID, Deliveries: DeliveriesToProto(res.Deliveries)}, nil
 }
 
 func statusError(ctx context.Context, log *slog.Logger, err error) error {
-	m := apierr.Of(err)
-	if m.Log {
+	if m := apierr.Of(err); m.Log {
 		log.ErrorContext(ctx, "grpc request failed", "code", m.Code, "err", err)
 	}
+	return toStatus(err)
+}
+
+func toStatus(err error) error {
+	m := apierr.Of(err)
 	return status.Error(m.GRPC, m.Message(err))
 }

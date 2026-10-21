@@ -1,16 +1,20 @@
 package httpapi
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"time"
 
 	"sis2_highload/internal/apierr"
 	"sis2_highload/internal/domain"
+	"sis2_highload/internal/faults"
 	"sis2_highload/internal/service"
 )
 
@@ -26,52 +30,54 @@ type Pinger interface {
 }
 
 type handler struct {
-	svc   *service.Service
-	ready Pinger
-	log   *slog.Logger
+	svc    *service.Service
+	ready  Pinger
+	log    *slog.Logger
+	faults *faults.Injector
 }
 
-func New(svc *service.Service, ready Pinger, log *slog.Logger) http.Handler {
-	h := &handler{svc: svc, ready: ready, log: log}
+// New returns the REST handler. inj may be nil; it applies to /v1 routes only.
+func New(svc *service.Service, ready Pinger, log *slog.Logger, inj *faults.Injector) http.Handler {
+	h := &handler{svc: svc, ready: ready, log: log, faults: inj}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/events", h.publish)
-	mux.HandleFunc("POST /v1/events/batch", h.publishBatch)
-	mux.HandleFunc("GET /v1/events/{id}", h.getStatus)
+	mux.HandleFunc("POST /v1/events", h.withFaults(h.publish))
+	mux.HandleFunc("POST /v1/events/batch", h.withFaults(h.publishBatch))
+	mux.HandleFunc("GET /v1/events/{id}", h.withFaults(h.getStatus))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", h.readyz)
 	return h.recover(h.withTimeout(mux))
 }
 
 func (h *handler) publish(w http.ResponseWriter, r *http.Request) {
-	var req eventDTO
+	var req Event
 	if !h.decode(w, r, &req) {
 		return
 	}
-	res, err := h.svc.Publish(r.Context(), req.toDomain())
+	res, err := h.svc.Publish(r.Context(), req.ToDomain())
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, resultFromDomain(res))
+	writeJSON(w, http.StatusAccepted, ResultFromDomain(res))
 }
 
 func (h *handler) publishBatch(w http.ResponseWriter, r *http.Request) {
-	var req batchRequest
+	var req BatchRequest
 	if !h.decode(w, r, &req) {
 		return
 	}
 	events := make([]domain.Event, len(req.Events))
 	for i, e := range req.Events {
-		events[i] = e.toDomain()
+		events[i] = e.ToDomain()
 	}
 	results, err := h.svc.PublishBatch(r.Context(), events)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	out := batchResponse{Results: make([]resultDTO, len(results))}
+	out := BatchResponse{Results: make([]Result, len(results))}
 	for i, res := range results {
-		out.Results[i] = resultFromDomain(res)
+		out.Results[i] = ResultFromDomain(res)
 	}
 	writeJSON(w, http.StatusAccepted, out)
 }
@@ -82,7 +88,7 @@ func (h *handler) getStatus(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, resultFromDomain(res))
+	writeJSON(w, http.StatusOK, ResultFromDomain(res))
 }
 
 func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
@@ -135,16 +141,66 @@ func (h *handler) recover(next http.Handler) http.Handler {
 	})
 }
 
+// withFaults buffers the response so an injected "lost response" can replace it after
+// the service has committed. Injected errors are not logged, like in the gRPC interceptor.
+func (h *handler) withFaults(next http.HandlerFunc) http.HandlerFunc {
+	if h.faults == nil {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := h.faults.Before(r.Context()); err != nil {
+			respondError(w, err)
+			return
+		}
+		buf := &bufferedWriter{header: make(http.Header)}
+		next(buf, r)
+		if buf.status < 400 && h.faults.LoseResponse() {
+			respondError(w, faults.ErrLostResponse)
+			return
+		}
+		buf.flushTo(w)
+	}
+}
+
 func (h *handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
-	m := apierr.Of(err)
-	if m.Log {
+	if m := apierr.Of(err); m.Log {
 		h.log.ErrorContext(r.Context(), "http request failed", "code", m.Code, "method", r.Method, "path", r.URL.Path, "err", err)
 	}
-	writeJSON(w, m.HTTP, errorResponse{Error: errorDTO{Code: m.Code, Message: m.Message(err)}})
+	respondError(w, err)
+}
+
+func respondError(w http.ResponseWriter, err error) {
+	m := apierr.Of(err)
+	writeJSON(w, m.HTTP, ErrorResponse{Error: ErrorBody{Code: m.Code, Message: m.Message(err)}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+type bufferedWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (b *bufferedWriter) Header() http.Header { return b.header }
+
+func (b *bufferedWriter) WriteHeader(status int) {
+	if b.status == 0 {
+		b.status = status
+	}
+}
+
+func (b *bufferedWriter) Write(p []byte) (int, error) {
+	b.WriteHeader(http.StatusOK)
+	return b.body.Write(p)
+}
+
+func (b *bufferedWriter) flushTo(w http.ResponseWriter) {
+	maps.Copy(w.Header(), b.header)
+	w.WriteHeader(cmp.Or(b.status, http.StatusOK))
+	_, _ = w.Write(b.body.Bytes())
 }

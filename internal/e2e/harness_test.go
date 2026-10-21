@@ -22,6 +22,7 @@ import (
 
 	pb "sis2_highload/gen/notifications/v1"
 	"sis2_highload/internal/domain"
+	"sis2_highload/internal/faults"
 	"sis2_highload/internal/grpcapi"
 	"sis2_highload/internal/httpapi"
 	"sis2_highload/internal/service"
@@ -33,35 +34,55 @@ type store interface {
 }
 
 type harness struct {
-	grpc    pb.NotificationServiceClient
-	health  healthpb.HealthClient
-	httpURL string
+	grpc       pb.NotificationServiceClient
+	health     healthpb.HealthClient
+	grpcDialer grpc.DialOption
+	httpURL    string // HTTP/1.1
+	h2cURL     string // cleartext HTTP/2 only
 }
 
 func newHarness(t *testing.T, st store) *harness {
+	return newFaultyHarness(t, st, faults.Config{})
+}
+
+// newFaultyHarness serves one service over gRPC (bufconn), REST/HTTP1.1 and REST/h2c,
+// all behind the same fault injector.
+func newFaultyHarness(t *testing.T, st store, fc faults.Config) *harness {
 	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	svc := service.New(st)
+	inj := faults.New(fc)
 
-	gs, hs := grpcapi.New(svc, log)
+	gs, hs := grpcapi.New(svc, log, inj)
 	grpcapi.SetServing(hs, true)
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(gs.Stop)
 
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	dialer := grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })
+	conn, err := grpc.NewClient("passthrough:///bufnet", dialer, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("grpc dial: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	ts := httptest.NewServer(httpapi.New(svc, st, log))
+	handler := httpapi.New(svc, st, log, inj)
+	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
-	return &harness{grpc: pb.NewNotificationServiceClient(conn), health: healthpb.NewHealthClient(conn), httpURL: ts.URL}
+	h2c := httptest.NewUnstartedServer(handler)
+	h2c.Config.Protocols = new(http.Protocols)
+	h2c.Config.Protocols.SetUnencryptedHTTP2(true)
+	h2c.Start()
+	t.Cleanup(h2c.Close)
+
+	return &harness{
+		grpc:       pb.NewNotificationServiceClient(conn),
+		health:     healthpb.NewHealthClient(conn),
+		grpcDialer: dialer,
+		httpURL:    ts.URL,
+		h2cURL:     h2c.URL,
+	}
 }
 
 // delivery is the protocol-neutral view used to compare responses.

@@ -29,6 +29,8 @@ University project (Backend for High-Load Environments). Go service implementing
 - Postgres: `make db-up db-migrate` starts it on localhost:5433 and applies `migrations/*.sql`; `make test-pg` runs tests with `DATABASE_URL` set (Postgres tests skip without it); `make db-down` stops it.
 - Run the server: `go run ./cmd/server` (memory store; gRPC :50051, REST :8080) or `go run ./cmd/server -store=postgres -db-url=$DATABASE_URL -h2c-addr=:8081` (adds REST over h2c). Flags fall back to env (`STORE`, `DATABASE_URL`, `GRPC_ADDR`, ...); see `-h`.
 - Error classification lives only in `internal/apierr`; transports map its result to gRPC codes / HTTP statuses. Cross-protocol tests are in `internal/e2e`.
+- Clients: `internal/client` (`NewGRPC`, `NewREST`, `NewRESTH2C`) implement one `Client` interface; every call gets `CallTimeout` (default 300ms) and runs through `internal/retry` (exp backoff + full jitter, MaxAttempts, optional token-bucket `Budget`, honours retry-after). Only UNAVAILABLE/RESOURCE_EXHAUSTED and connection errors are retried, always with the same event_id.
+- Fault injection (`internal/faults`, both transports): `-fault-fail-before`, `-fault-fail-after` (lost response after commit), `-fault-latency`, `-fault-latency-jitter` (env `FAULT_*`). Off by default. `make test-pg` uses `-p 1` because several packages truncate the same table.
 - Store behaviour is covered by the shared suite `internal/store/storetest`; every Store implementation must pass it.
 - Commit at the end of each phase with a clear message.
 
