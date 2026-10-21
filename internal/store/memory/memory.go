@@ -65,3 +65,5 @@ func (s *Store) GetDeliveries(ctx context.Context, eventID string) ([]domain.Del
 	domain.SortDeliveries(ds)
 	return ds, nil
 }
+
+func (s *Store) Ping(context.Context) error { return nil }

@@ -165,3 +165,5 @@ func marshalPayload(p map[string]string) (string, error) {
 	}
 	return string(b), nil
 }
+
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }

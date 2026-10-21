@@ -27,6 +27,8 @@ University project (Backend for High-Load Environments). Go service implementing
 - Work in phases; only do what the current phase asks. Stop and report at the end of each phase (what changed, commands run, results).
 - `make gen` regenerates code; `make test` (`go test -race ./...`) must pass before finishing a phase.
 - Postgres: `make db-up db-migrate` starts it on localhost:5433 and applies `migrations/*.sql`; `make test-pg` runs tests with `DATABASE_URL` set (Postgres tests skip without it); `make db-down` stops it.
+- Run the server: `go run ./cmd/server` (memory store; gRPC :50051, REST :8080) or `go run ./cmd/server -store=postgres -db-url=$DATABASE_URL -h2c-addr=:8081` (adds REST over h2c). Flags fall back to env (`STORE`, `DATABASE_URL`, `GRPC_ADDR`, ...); see `-h`.
+- Error classification lives only in `internal/apierr`; transports map its result to gRPC codes / HTTP statuses. Cross-protocol tests are in `internal/e2e`.
 - Store behaviour is covered by the shared suite `internal/store/storetest`; every Store implementation must pass it.
 - Commit at the end of each phase with a clear message.
 
