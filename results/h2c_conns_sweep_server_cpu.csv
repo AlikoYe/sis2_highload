@@ -1,0 +1,13 @@
+label,server_cpu_ms,duration_s
+sweep-h2c1-c64-r1,45670,15.0
+sweep-h2c2-c64-r1,62800,15.0
+sweep-h2c4-c64-r1,72030,15.0
+sweep-h2c8-c64-r1,69760,15.0
+sweep-h2c1-c64-r2,46410,15.0
+sweep-h2c2-c64-r2,62960,15.0
+sweep-h2c4-c64-r2,70940,15.0
+sweep-h2c8-c64-r2,69210,15.0
+sweep-h2c4-c256-r1,74010,15.0
+sweep-h2c8-c256-r1,68950,15.0
+sweep-h2c4-c256-r2,74310,15.0
+sweep-h2c8-c256-r2,70000,15.0

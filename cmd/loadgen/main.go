@@ -21,6 +21,7 @@ import (
 type config struct {
 	protocol, target, op, payload, mode string
 	concurrency                         int
+	conns                               int
 	rate                                float64
 	maxInflight                         int
 	duration, warmup, callTimeout       time.Duration
@@ -55,6 +56,7 @@ func parseFlags() (config, error) {
 	flag.StringVar(&c.payload, "payload", "small", "small|medium|large (batch always sends 100 small events)")
 	flag.StringVar(&c.mode, "mode", "closed", "closed|open")
 	flag.IntVar(&c.concurrency, "concurrency", 16, "closed mode: number of workers")
+	flag.IntVar(&c.conns, "conns", 1, "grpc/h2c: number of connections, requests round-robin across them; ignored for rest (HTTP/1.1 already uses one connection per in-flight request)")
 	flag.Float64Var(&c.rate, "rate", 1000, "open mode: requests per second")
 	flag.IntVar(&c.maxInflight, "max-inflight", 1024, "open mode: max outstanding requests; extra ones are dropped")
 	flag.DurationVar(&c.duration, "duration", 30*time.Second, "measured duration")
@@ -82,6 +84,8 @@ func parseFlags() (config, error) {
 		return c, errors.New("-concurrency must be > 0")
 	case c.mode == "open" && (c.rate <= 0 || c.maxInflight <= 0):
 		return c, errors.New("-rate and -max-inflight must be > 0")
+	case c.conns <= 0:
+		return c, errors.New("-conns must be > 0")
 	case c.duration <= 0 || c.warmup < 0:
 		return c, errors.New("-duration must be > 0 and -warmup >= 0")
 	}
@@ -89,6 +93,9 @@ func parseFlags() (config, error) {
 		c.payload = string(workload.Batch)
 	} else if _, err := workload.ParseKind(c.payload); err != nil || c.payload == string(workload.Batch) {
 		return c, fmt.Errorf("unknown -payload %q", c.payload)
+	}
+	if c.protocol == "rest" {
+		c.conns = 0 // recorded as 0: HTTP/1.1 opens one connection per in-flight request
 	}
 	if c.mode == "open" {
 		c.concurrency = 0
@@ -101,16 +108,30 @@ func parseFlags() (config, error) {
 	return c, nil
 }
 
+// newClient builds one client per connection (sharing one retry budget) and
+// round-robins across them when -conns > 1.
 func newClient(cfg config) (client.Client, error) {
 	opts := client.Options{CallTimeout: cfg.callTimeout, Policy: retry.DefaultPolicy(), Budget: retry.DefaultBudget()}
-	switch cfg.protocol {
-	case "grpc":
-		return client.NewGRPC(cfg.target, opts)
-	case "rest":
+	if cfg.protocol == "rest" {
 		return client.NewREST("http://"+cfg.target, opts), nil
-	default:
-		return client.NewRESTH2C("http://"+cfg.target, opts), nil
 	}
+	rr := &roundRobin{}
+	for range cfg.conns {
+		if cfg.protocol == "h2c" {
+			rr.cs = append(rr.cs, client.NewRESTH2C("http://"+cfg.target, opts))
+			continue
+		}
+		c, err := client.NewGRPC(cfg.target, opts)
+		if err != nil {
+			_ = rr.Close()
+			return nil, err
+		}
+		rr.cs = append(rr.cs, c)
+	}
+	if len(rr.cs) == 1 {
+		return rr.cs[0], nil
+	}
+	return rr, nil
 }
 
 // builder returns a function that prepares one request; rng is only used by the status op.

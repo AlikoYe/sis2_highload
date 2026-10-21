@@ -18,6 +18,7 @@ var csvHeader = []string{
 	"requests", "ok", "errors", "err_breakdown", "dropped", "rps",
 	"mean_us", "p50_us", "p90_us", "p95_us", "p99_us", "p999_us", "max_us",
 	"attempts", "retries", "client_cpu_ms",
+	"conns", // appended later; readers must tolerate its absence in older CSVs
 }
 
 type result struct {
@@ -44,6 +45,7 @@ func (r result) row() []string {
 		i(r.rec.ok + r.rec.errs), i(r.rec.ok), i(r.rec.errs), breakdown(r.rec.byCode), i(r.dropped), f(r.rps()),
 		f(h.Mean()), q(50), q(90), q(95), q(99), q(99.9), i(h.Max()),
 		i(r.attempts), i(r.retries), i(r.clientCPU.Milliseconds()),
+		strconv.Itoa(r.cfg.conns),
 	}
 }
 
@@ -93,7 +95,7 @@ func (r result) summary(w io.Writer) {
 	ms := func(us int64) string {
 		return (time.Duration(us) * time.Microsecond).Round(10 * time.Microsecond).String()
 	}
-	load := fmt.Sprintf("c=%d", r.cfg.concurrency)
+	load := fmt.Sprintf("c=%d conns=%d", r.cfg.concurrency, r.cfg.conns)
 	if r.cfg.mode == "open" {
 		load = fmt.Sprintf("rate=%.0f/s", r.cfg.rate)
 	}

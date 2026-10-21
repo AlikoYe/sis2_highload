@@ -3,7 +3,7 @@ BUF := $(GOBIN)/buf
 DATABASE_URL ?= postgres://notif:notif@localhost:5433/notif?sslmode=disable
 
 .DEFAULT_GOAL := build
-.PHONY: tools gen build test test-pg vet tidy db-up db-down db-migrate payloadsize bench-codec bench-quick bench-sample bench-full
+.PHONY: tools gen build test test-pg vet tidy db-up db-down db-migrate payloadsize bench-codec bench-quick bench-sample bench-investigate bench-full summary
 
 tools:
 	go install github.com/bufbuild/buf/cmd/buf@latest
@@ -58,5 +58,12 @@ bench-quick:
 bench-sample:
 	scripts/bench.sh sample
 
+bench-investigate:
+	scripts/bench.sh investigate
+
 bench-full:
 	scripts/bench.sh full
+
+# SUMMARY_INPUT=results/bench_full_<ts>.csv to summarise one run only.
+summary:
+	go run ./cmd/benchsummary $(SUMMARY_INPUT)

@@ -1,28 +1,45 @@
 #!/usr/bin/env bash
-# Runs the protocol benchmark matrix. Usage: scripts/bench.sh quick|sample|full
+# Runs the protocol benchmark matrix.
+# Usage: scripts/bench.sh quick|sample|investigate|full [--estimate]
 # Env: SERVER_PROCS / LOADGEN_PROCS (GOMAXPROCS, default half the cores each),
-#      DATABASE_URL, MEMORY_MAX_EVENTS (default 1000000).
+#      DATABASE_URL, MEMORY_MAX_EVENTS (default 1000000),
+#      FULL_H2C_EXTRA (extra h2c variant in the full matrix, default h2c4; empty disables).
 set -euo pipefail
 
 PRESET=${1:-quick}
+ESTIMATE_ONLY=0
+if [ "${2:-}" = --estimate ]; then
+	ESTIMATE_ONLY=1
+fi
 cd "$(dirname "$0")/.."
+
+# Keep the machine awake for the long run (display, idle, disk, system, user).
+if [ "$PRESET" = full ] && [ $ESTIMATE_ONLY = 0 ] && [ -z "${BENCH_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null; then
+	export BENCH_CAFFEINATED=1
+	exec caffeinate -dimsu "$0" "$@"
+fi
 
 CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc)
 SERVER_PROCS=${SERVER_PROCS:-$((CORES / 2))}
 LOADGEN_PROCS=${LOADGEN_PROCS:-$((CORES / 2))}
 DATABASE_URL=${DATABASE_URL:-postgres://notif:notif@localhost:5433/notif?sslmode=disable}
 MEMORY_MAX_EVENTS=${MEMORY_MAX_EVENTS:-1000000}
+# h2c over 4 connections beat 1 and 8 at c=64 and c=256; see results/h2c_investigation.md.
+FULL_H2C_EXTRA=${FULL_H2C_EXTRA-h2c4}
 GRPC_PORT=50051
 HTTP_PORT=8080
 H2C_PORT=8081
+PPROF_PORT=6060
+PROFILE_S=20
+RUN_OVERHEAD_S=3 # server start/stop, client setup, seeding (measured ~2-3s)
 PROTOCOLS="grpc rest h2c"
 
 case $PRESET in
-quick) DURATION=5s WARMUP=1s REPS=1 ;;
-sample) DURATION=30s WARMUP=5s REPS=1 ;;
-full) DURATION=30s WARMUP=5s REPS=3 ;;
+quick) DURATION_S=5 WARMUP_S=1 REPS=1 ;;
+sample | investigate) DURATION_S=30 WARMUP_S=5 REPS=1 ;;
+full) DURATION_S=30 WARMUP_S=5 REPS=3 ;;
 *)
-	echo "usage: $0 quick|sample|full" >&2
+	echo "usage: $0 quick|sample|investigate|full [--estimate]" >&2
 	exit 2
 	;;
 esac
@@ -31,11 +48,9 @@ TS=$(date +%Y%m%d-%H%M%S)
 OUT=results/bench_${PRESET}_${TS}.csv
 CPU_OUT=results/bench_${PRESET}_${TS}_server_cpu.csv
 LOG_DIR=results/logs/${PRESET}_${TS}
-mkdir -p "$LOG_DIR"
-
-echo "building binaries"
-go build -o bin/server ./cmd/server
-go build -o bin/loadgen ./cmd/loadgen
+COUNT_ONLY=0
+RUN_COUNT=0
+SERVER_PID=""
 
 pg_version() {
 	docker compose exec -T postgres postgres --version 2>/dev/null || echo "not running"
@@ -44,7 +59,7 @@ pg_version() {
 write_env() {
 	{
 		echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-		echo "preset: $PRESET (duration $DURATION, warmup $WARMUP, reps $REPS)"
+		echo "preset: $PRESET (duration ${DURATION_S}s, warmup ${WARMUP_S}s, reps $REPS)"
 		echo "go: $(go version)"
 		echo "os: $(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null) $(uname -m)"
 		echo "cpu: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo)"
@@ -54,10 +69,9 @@ write_env() {
 		echo "postgres: $(pg_version)"
 		echo "GOMAXPROCS: server=$SERVER_PROCS loadgen=$LOADGEN_PROCS"
 		echo "memory store cap: $MEMORY_MAX_EVENTS events (fresh server per run)"
+		echo "protocol order: interleaved per configuration, rotated each repetition"
 	} >results/env.txt
 }
-
-SERVER_PID=""
 
 cleanup() {
 	if [ -n "$SERVER_PID" ]; then
@@ -115,75 +129,149 @@ port_for() {
 	esac
 }
 
-# run LABEL STORE PROTOCOL OP PAYLOAD MODE LOAD [extra server flags...]
+# run LABEL STORE VARIANT OP PAYLOAD MODE LOAD [extra server flags...]
+# VARIANT is a protocol with an optional connection count, e.g. grpc, h2c8.
 # Each run gets a fresh server (and an empty table for Postgres) so runs do not
-# inherit heap, caches or table bloat from earlier ones.
+# inherit heap, caches or table bloat. PROFILE=1 captures a server CPU profile
+# for PROFILE_S seconds starting after the warm-up.
 run() {
-	local label=$1 store=$2 protocol=$3 op=$4 payload=$5 mode=$6 load=$7
+	local label=$1 store=$2 variant=$3 op=$4 payload=$5 mode=$6 load=$7
 	shift 7
+	if [ $COUNT_ONLY = 1 ]; then
+		RUN_COUNT=$((RUN_COUNT + 1))
+		return
+	fi
+	local protocol conns
+	case $variant in
+	grpc*) protocol=grpc ;;
+	rest*) protocol=rest ;;
+	h2c*) protocol=h2c ;;
+	*)
+		echo "unknown variant $variant" >&2
+		exit 1
+		;;
+	esac
+	conns=${variant#"$protocol"}
+	conns=${conns:-1}
 	if [ "$store" = postgres ]; then
 		docker compose exec -T postgres psql -q -U notif -d notif -c 'TRUNCATE deliveries' >/dev/null
 	fi
-	start_server "$store" "$@"
+	local profile=${PROFILE:-0}
+	if [ "$profile" = 1 ]; then
+		start_server "$store" -pprof-addr "localhost:$PPROF_PORT" "$@"
+	else
+		start_server "$store" "$@"
+	fi
+	local prof_pid=""
+	if [ "$profile" = 1 ]; then
+		mkdir -p results/profiles
+		(sleep "$WARMUP_S" && curl -sf "http://localhost:$PPROF_PORT/debug/pprof/profile?seconds=$PROFILE_S" \
+			-o "results/profiles/$label.pprof") &
+		prof_pid=$!
+	fi
 	local loadflag="-concurrency $load"
 	if [ "$mode" = open ]; then
 		loadflag="-rate $load"
 	fi
 	# shellcheck disable=SC2086
-	GOMAXPROCS=$LOADGEN_PROCS bin/loadgen -protocol "$protocol" -target "localhost:$(port_for "$protocol")" \
-		-op "$op" -payload "$payload" -mode "$mode" $loadflag -duration "$DURATION" -warmup "$WARMUP" \
+	GOMAXPROCS=$LOADGEN_PROCS bin/loadgen -protocol "$protocol" -conns "$conns" -target "localhost:$(port_for "$protocol")" \
+		-op "$op" -payload "$payload" -mode "$mode" $loadflag -duration "${DURATION_S}s" -warmup "${WARMUP_S}s" \
 		-label "$label" -store "$store" -out "$OUT" -server-pid "$SERVER_PID" -server-cpu-out "$CPU_OUT" |
 		tee -a "$LOG_DIR/loadgen.log"
+	if [ -n "$prof_pid" ]; then
+		wait "$prof_pid"
+		go tool pprof -top -nodecount=30 bin/server "results/profiles/$label.pprof" >"results/profiles/$label.top.txt" 2>/dev/null
+	fi
 	stop_server
 }
 
-matrix_quick() {
-	local r=1 p c
-	for p in $PROTOCOLS; do
-		for c in 1 64; do
-			run "mem-$p-publish-small-c$c-r$r" memory "$p" publish small closed "$c"
-		done
-		run "mem-$p-open1000-r$r" memory "$p" publish small open 1000
+# rotate "a b c" K -> list rotated left by K positions.
+rotate() {
+	local -a items
+	read -r -a items <<<"$1"
+	local n=${#items[@]} k=$(($2 % ${#items[@]})) i out=""
+	for ((i = 0; i < n; i++)); do
+		out="$out ${items[$(((i + k) % n))]}"
 	done
+	echo "$out"
+}
+
+# for_protocols REP "VARIANTS" SCENARIO STORE OP PAYLOAD MODE LOAD [server flags...]
+# Runs the variants back to back for one configuration, order rotated per repetition.
+for_protocols() {
+	local r=$1 variants=$2 scenario=$3 store=$4 op=$5 payload=$6 mode=$7 load=$8
+	shift 8
+	local tag="c$load" v
+	if [ "$mode" = open ]; then
+		tag="open$load"
+	fi
+	for v in $(rotate "$variants" $((r - 1))); do
+		run "$scenario-$v-$op-$payload-$tag-r$r" "$store" "$v" "$op" "$payload" "$mode" "$load" "$@"
+	done
+}
+
+matrix_quick() {
+	local c
+	for c in 1 64; do
+		for_protocols 1 "$PROTOCOLS" mem memory publish small closed "$c"
+	done
+	for_protocols 1 "$PROTOCOLS" mem memory publish small open 1000
 }
 
 matrix_sample() {
-	local p
-	for p in $PROTOCOLS; do
-		run "sample-mem-$p-publish-small-c64" memory "$p" publish small closed 64
-	done
+	for_protocols 1 "$PROTOCOLS" sample memory publish small closed 64
+}
+
+matrix_investigate() {
+	for_protocols 1 "h2c h2c4 h2c8 rest grpc grpc4" inv memory publish small closed 64
+	for_protocols 1 "h2c h2c8 rest" inv memory publish small closed 256
+	PROFILE=1 for_protocols 1 "$PROTOCOLS" prof memory publish small closed 64
 }
 
 matrix_full() {
-	local r p c spec op payload
+	local r c spec op payload variants
 	for r in $(seq 1 "$REPS"); do
-		for p in $PROTOCOLS; do
-			for spec in publish:small publish:large batch:batch; do
-				op=${spec%%:*}
-				payload=${spec##*:}
-				for c in 1 16 64 256; do
-					run "mem-$p-$op-$payload-c$c-r$r" memory "$p" "$op" "$payload" closed "$c"
-				done
+		for spec in publish:small publish:large batch:batch; do
+			op=${spec%%:*}
+			payload=${spec##*:}
+			for c in 1 16 64 256; do
+				variants=$PROTOCOLS
+				if [ -n "$FULL_H2C_EXTRA" ] && [ "$spec" != publish:large ] && { [ "$c" = 64 ] || [ "$c" = 256 ]; }; then
+					variants="$PROTOCOLS $FULL_H2C_EXTRA"
+				fi
+				for_protocols "$r" "$variants" mem memory "$op" "$payload" closed "$c"
 			done
-			for c in 16 256; do
-				run "mem-$p-status-c$c-r$r" memory "$p" status small closed "$c"
-			done
-			run "mem-$p-open3000-r$r" memory "$p" publish small open 3000
-			run "mem-$p-faults5pct-c64-r$r" memory "$p" publish small closed 64 -fault-fail-after=0.05
 		done
-		for p in $PROTOCOLS; do
-			for c in 1 64; do
-				run "pg-$p-publish-small-c$c-r$r" postgres "$p" publish small closed "$c"
-			done
-			run "pg-$p-open3000-r$r" postgres "$p" publish small open 3000
+		for c in 16 256; do
+			for_protocols "$r" "$PROTOCOLS" mem memory status small closed "$c"
 		done
+		for_protocols "$r" "$PROTOCOLS" mem memory publish small open 3000
+		for_protocols "$r" "$PROTOCOLS" rel memory publish small closed 64 -fault-fail-after=0.05
+		for c in 1 64; do
+			for_protocols "$r" "$PROTOCOLS" pg postgres publish small closed "$c"
+		done
+		for_protocols "$r" "$PROTOCOLS" pg postgres publish small open 3000
 	done
 }
 
+COUNT_ONLY=1
+"matrix_$PRESET"
+COUNT_ONLY=0
+TOTAL_S=$((RUN_COUNT * (DURATION_S + WARMUP_S + RUN_OVERHEAD_S)))
+printf 'preset=%s: %d runs x (%ds + %ds warm-up + ~%ds overhead) = ~%dh%02dm\n' \
+	"$PRESET" "$RUN_COUNT" "$DURATION_S" "$WARMUP_S" "$RUN_OVERHEAD_S" $((TOTAL_S / 3600)) $((TOTAL_S % 3600 / 60))
+if [ $ESTIMATE_ONLY = 1 ]; then
+	exit 0
+fi
+
+mkdir -p "$LOG_DIR"
+echo "building binaries"
+go build -o bin/server ./cmd/server
+go build -o bin/loadgen ./cmd/loadgen
 if [ "$PRESET" = full ]; then
 	ensure_postgres
 fi
 write_env
-echo "preset=$PRESET -> $OUT"
+echo "writing $OUT"
 "matrix_$PRESET"
 echo "done: $OUT (server CPU: $CPU_OUT, logs: $LOG_DIR)"

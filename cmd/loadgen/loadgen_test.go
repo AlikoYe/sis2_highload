@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"sis2_highload/internal/client"
 	"sis2_highload/internal/domain"
 )
 
@@ -137,5 +138,28 @@ func TestParsePSTime(t *testing.T) {
 	}
 	if cpu, err := processCPU(os.Getpid()); err != nil || cpu <= 0 {
 		t.Errorf("processCPU(self) = %v, %v", cpu, err)
+	}
+}
+
+type countingClient struct {
+	client.Client
+	calls int
+}
+
+func (c *countingClient) Publish(context.Context, domain.Event) (domain.Result, error) {
+	c.calls++
+	return domain.Result{}, nil
+}
+
+func (c *countingClient) Stats() client.Stats { return client.Stats{Calls: int64(c.calls)} }
+
+func TestRoundRobinSpreadsEvenly(t *testing.T) {
+	a, b, c := &countingClient{}, &countingClient{}, &countingClient{}
+	rr := &roundRobin{cs: []client.Client{a, b, c}}
+	for range 9 {
+		_, _ = rr.Publish(context.Background(), domain.Event{})
+	}
+	if a.calls != 3 || b.calls != 3 || c.calls != 3 || rr.Stats().Calls != 9 {
+		t.Fatalf("calls = %d/%d/%d total %d, want 3 each", a.calls, b.calls, c.calls, rr.Stats().Calls)
 	}
 }

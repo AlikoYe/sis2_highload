@@ -1,0 +1,38 @@
+File: server
+Type: cpu
+Time: 2026-10-21 23:49:12 +05
+Duration: 15.13s, Total samples = 67.02s (442.95%)
+Showing nodes accounting for 61.50s, 91.76% of 67.02s total
+Dropped 511 nodes (cum <= 0.34s)
+Showing top 30 nodes out of 116
+      flat  flat%   sum%        cum   cum%
+    42.88s 63.98% 63.98%     42.88s 63.98%  syscall.rawsyscalln
+     7.48s 11.16% 75.14%      7.48s 11.16%  runtime.kevent
+     4.11s  6.13% 81.27%      4.11s  6.13%  runtime.usleep
+     1.54s  2.30% 83.57%      1.78s  2.66%  runtime.tryDeferToSpanScan
+     1.24s  1.85% 85.42%      1.24s  1.85%  runtime.(*mspan).typePointersOfUnchecked
+     1.23s  1.84% 87.26%      1.23s  1.84%  runtime.madvise
+     0.81s  1.21% 88.47%      3.98s  5.94%  runtime.scanObject
+     0.57s  0.85% 89.32%      0.57s  0.85%  runtime.pthread_cond_wait
+     0.44s  0.66% 89.97%      0.44s  0.66%  runtime.pthread_cond_signal
+     0.31s  0.46% 90.44%      4.12s  6.15%  runtime.selectgo
+     0.13s  0.19% 90.63%      3.36s  5.01%  runtime.sellock
+     0.11s  0.16% 90.79%      0.34s  0.51%  runtime.pcvalue
+     0.10s  0.15% 90.94%      0.65s  0.97%  runtime.scanSpan
+     0.09s  0.13% 91.08%         4s  5.97%  runtime.lock2
+     0.06s  0.09% 91.17%      5.13s  7.65%  runtime.gcDrain
+     0.06s  0.09% 91.26%      0.40s   0.6%  runtime.unlock2
+     0.05s 0.075% 91.33%      0.49s  0.73%  runtime.mallocgcSmallScanNoHeader
+     0.04s  0.06% 91.39%      0.79s  1.18%  runtime.mallocgc
+     0.04s  0.06% 91.45%      8.81s 13.15%  runtime.schedule
+     0.03s 0.045% 91.50%      0.58s  0.87%  encoding/json.(*Decoder).readValue
+     0.03s 0.045% 91.54%      0.69s  1.03%  runtime.stealWork
+     0.02s  0.03% 91.57%      0.75s  1.12%  encoding/json.(*decodeState).object
+     0.02s  0.03% 91.60%     23.86s 35.60%  internal/poll.(*FD).Read
+     0.02s  0.03% 91.63%      2.31s  3.45%  net/http.(*http2serverConn).serve
+     0.02s  0.03% 91.66%      8.67s 12.94%  runtime.findRunnable
+     0.02s  0.03% 91.69%      0.65s  0.97%  runtime.runqgrab
+     0.02s  0.03% 91.72%      0.35s  0.52%  runtime.sweepone
+     0.01s 0.015% 91.73%      0.46s  0.69%  encoding/json.(*Decoder).refill
+     0.01s 0.015% 91.75%      0.75s  1.12%  encoding/json.(*decodeState).value
+     0.01s 0.015% 91.76%     42.93s 64.06%  internal/poll.ignoringEINTRIO (inline)

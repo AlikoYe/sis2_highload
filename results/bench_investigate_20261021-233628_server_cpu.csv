@@ -1,0 +1,13 @@
+label,server_cpu_ms,duration_s
+inv-h2c-publish-small-c64-r1,91380,30.0
+inv-h2c4-publish-small-c64-r1,146310,30.0
+inv-h2c8-publish-small-c64-r1,139560,30.0
+inv-rest-publish-small-c64-r1,130849,30.0
+inv-grpc-publish-small-c64-r1,107040,30.0
+inv-grpc4-publish-small-c64-r1,137690,30.0
+inv-h2c-publish-small-c256-r1,123720,30.0
+inv-h2c8-publish-small-c256-r1,141360,30.0
+inv-rest-publish-small-c256-r1,133370,30.0
+prof-grpc-publish-small-c64-r1,106980,30.0
+prof-rest-publish-small-c64-r1,132249,30.0
+prof-h2c-publish-small-c64-r1,92250,30.0

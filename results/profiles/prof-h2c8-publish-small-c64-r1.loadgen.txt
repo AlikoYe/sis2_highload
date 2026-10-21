@@ -1,0 +1,4 @@
+prof-h2c8  h2c publish/small closed c=64 conns=8 store=memory
+  62374 ok/s  ok=1247486 errors=0 [] dropped=0  attempts=1247485 retries=0
+  latency p50=1.04ms p90=1.31ms p95=1.57ms p99=2.27ms p99.9=4.38ms max=11.7ms
+  client cpu=1m18.154s

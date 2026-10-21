@@ -1,0 +1,4 @@
+prof-h2c4  h2c publish/small closed c=64 conns=4 store=memory
+  87597 ok/s  ok=1751947 errors=0 [] dropped=0  attempts=1751947 retries=0
+  latency p50=680µs p90=1.09ms p95=1.31ms p99=2.08ms p99.9=3.91ms max=14.4ms
+  client cpu=1m22.19s

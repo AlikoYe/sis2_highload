@@ -1,0 +1,38 @@
+File: server
+Type: cpu
+Time: 2026-10-21 23:41:50 +05
+Duration: 20.11s, Total samples = 66.65s (331.35%)
+Showing nodes accounting for 56.84s, 85.28% of 66.65s total
+Dropped 495 nodes (cum <= 0.33s)
+Showing top 30 nodes out of 165
+      flat  flat%   sum%        cum   cum%
+    18.11s 27.17% 27.17%     18.11s 27.17%  runtime.kevent
+    12.01s 18.02% 45.19%     12.01s 18.02%  syscall.rawsyscalln
+    11.42s 17.13% 62.33%     11.42s 17.13%  runtime.usleep
+     5.12s  7.68% 70.01%      5.12s  7.68%  runtime.pthread_cond_wait
+     1.88s  2.82% 72.83%      1.88s  2.82%  runtime.pthread_cond_signal
+     1.63s  2.45% 75.27%      4.83s  7.25%  runtime.scanObject
+     1.40s  2.10% 77.37%      2.14s  3.21%  runtime.tryDeferToSpanScan
+     0.83s  1.25% 78.62%      0.83s  1.25%  runtime.madvise
+     0.41s  0.62% 79.23%      0.41s  0.62%  runtime.typePointers.nextFast (inline)
+     0.40s   0.6% 79.83%      0.40s   0.6%  runtime.nanotime1
+     0.39s  0.59% 80.42%      0.59s  0.89%  runtime.findObject
+     0.36s  0.54% 80.96%      0.39s  0.59%  runtime.(*mspan).typePointersOfUnchecked
+     0.36s  0.54% 81.50%      0.48s  0.72%  runtime.greyobject
+     0.29s  0.44% 81.94%      2.43s  3.65%  internal/sync.(*Mutex).Lock (inline)
+     0.25s  0.38% 82.31%      6.06s  9.09%  internal/sync.(*Mutex).Unlock (inline)
+     0.22s  0.33% 82.64%      1.52s  2.28%  runtime.mallocgcSmallScanNoHeader
+     0.21s  0.32% 82.96%      2.13s  3.20%  runtime.mallocgc
+     0.21s  0.32% 83.27%      0.57s  0.86%  runtime.pcvalue
+     0.18s  0.27% 83.54%      2.14s  3.21%  internal/sync.(*Mutex).lockSlow
+     0.17s  0.26% 83.80%      0.37s  0.56%  runtime.(*spanInlineMarkBits).tryAcquire
+     0.13s   0.2% 83.99%     11.76s 17.64%  runtime.gcDrain
+     0.13s   0.2% 84.19%      0.58s  0.87%  runtime.scanObjectsSmall
+     0.13s   0.2% 84.38%      0.87s  1.31%  runtime.unlock2
+     0.12s  0.18% 84.56%      0.53s   0.8%  runtime.(*sweepLocked).sweep
+     0.11s  0.17% 84.73%      7.93s 11.90%  runtime.lock2
+     0.10s  0.15% 84.88%      0.74s  1.11%  runtime.adjustframe
+     0.09s  0.14% 85.01%      1.34s  2.01%  runtime.scanSpan
+     0.06s  0.09% 85.10%      6.33s  9.50%  google.golang.org/grpc/internal/transport.(*controlBuffer).executeAndPut
+     0.06s  0.09% 85.19%      0.52s  0.78%  runtime.(*stkframe).getStackMap
+     0.06s  0.09% 85.28%      0.51s  0.77%  runtime.scanObjectSmall

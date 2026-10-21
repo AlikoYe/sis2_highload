@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -32,6 +33,7 @@ type config struct {
 	grpcAddr   string
 	httpAddr   string
 	h2cAddr    string
+	pprofAddr  string
 	logLevel   slog.Level
 	faults     faults.Config
 }
@@ -64,6 +66,7 @@ func parseConfig() (config, error) {
 	flag.StringVar(&cfg.grpcAddr, "grpc-addr", envOr("GRPC_ADDR", ":50051"), "gRPC listen address (env GRPC_ADDR)")
 	flag.StringVar(&cfg.httpAddr, "http-addr", envOr("HTTP_ADDR", ":8080"), "REST HTTP/1.1 listen address (env HTTP_ADDR)")
 	flag.StringVar(&cfg.h2cAddr, "h2c-addr", os.Getenv("H2C_ADDR"), "REST over cleartext HTTP/2 listen address, empty disables (env H2C_ADDR)")
+	flag.StringVar(&cfg.pprofAddr, "pprof-addr", os.Getenv("PPROF_ADDR"), "net/http/pprof listen address on its own listener, empty disables (env PPROF_ADDR)")
 	flag.StringVar(&level, "log-level", envOr("LOG_LEVEL", "info"), "debug|info|warn|error (env LOG_LEVEL)")
 	flag.Float64Var(&cfg.faults.FailBefore, "fault-fail-before", envFloat("FAULT_FAIL_BEFORE", 0), "probability of failing a request before the service (env FAULT_FAIL_BEFORE)")
 	flag.Float64Var(&cfg.faults.FailAfter, "fault-fail-after", envFloat("FAULT_FAIL_AFTER", 0), "probability of discarding a committed response (env FAULT_FAIL_AFTER)")
@@ -136,6 +139,16 @@ func run(cfg config, log *slog.Logger) error {
 		log.Info("listening", "proto", "h2c", "addr", h2cSrv.Addr)
 	}
 
+	if cfg.pprofAddr != "" {
+		// No WriteTimeout: /debug/pprof/profile streams for the requested seconds.
+		pprofSrv := &http.Server{Handler: pprofMux(), ReadHeaderTimeout: 2 * time.Second}
+		if err := serveHTTP(pprofSrv, cfg.pprofAddr, errc); err != nil {
+			return err
+		}
+		defer pprofSrv.Close()
+		log.Info("listening", "proto", "pprof", "addr", pprofSrv.Addr)
+	}
+
 	grpcapi.SetServing(health, true)
 
 	select {
@@ -169,6 +182,16 @@ func run(cfg config, log *slog.Logger) error {
 	}
 	log.Info("stopped")
 	return err
+}
+
+func pprofMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
 }
 
 func openStore(ctx context.Context, cfg config) (store, func(), error) {

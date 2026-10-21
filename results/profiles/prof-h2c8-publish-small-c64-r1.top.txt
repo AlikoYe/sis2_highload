@@ -1,0 +1,38 @@
+File: server
+Type: cpu
+Time: 2026-10-21 23:49:36 +05
+Duration: 15.11s, Total samples = 65s (430.30%)
+Showing nodes accounting for 60.79s, 93.52% of 65s total
+Dropped 460 nodes (cum <= 0.33s)
+Showing top 30 nodes out of 104
+      flat  flat%   sum%        cum   cum%
+    47.92s 73.72% 73.72%     47.92s 73.72%  syscall.rawsyscalln
+     4.31s  6.63% 80.35%      4.31s  6.63%  runtime.kevent
+     2.57s  3.95% 84.31%      2.57s  3.95%  runtime.usleep
+     1.32s  2.03% 86.34%      1.32s  2.03%  runtime.madvise
+     1.32s  2.03% 88.37%      1.32s  2.03%  runtime.pthread_cond_wait
+     1.02s  1.57% 89.94%      1.23s  1.89%  runtime.tryDeferToSpanScan
+     0.59s  0.91% 90.85%      0.59s  0.91%  runtime.(*mspan).typePointersOfUnchecked
+     0.59s  0.91% 91.75%      0.59s  0.91%  runtime.pthread_cond_signal
+     0.52s   0.8% 92.55%      2.61s  4.02%  runtime.scanObject
+     0.22s  0.34% 92.89%      1.27s  1.95%  runtime.selectgo
+     0.07s  0.11% 93.00%      0.77s  1.18%  runtime.sellock
+     0.06s 0.092% 93.09%      0.40s  0.62%  runtime.mallocgcSmallScanNoHeader
+     0.04s 0.062% 93.15%      3.36s  5.17%  runtime.gcDrain
+     0.03s 0.046% 93.20%      1.24s  1.91%  net/http.(*http2serverConn).serve
+     0.02s 0.031% 93.23%      0.38s  0.58%  encoding/json.(*decodeState).literalStore
+     0.02s 0.031% 93.26%      0.52s   0.8%  encoding/json.(*decodeState).object
+     0.02s 0.031% 93.29%      7.31s 11.25%  runtime.findRunnable
+     0.02s 0.031% 93.32%      1.53s  2.35%  runtime.lock2
+     0.02s 0.031% 93.35%      0.44s  0.68%  runtime.scanSpan
+     0.01s 0.015% 93.37%      0.72s  1.11%  encoding/json.(*Decoder).Decode
+     0.01s 0.015% 93.38%      0.53s  0.82%  encoding/json.(*decodeState).unmarshal
+     0.01s 0.015% 93.40%     29.18s 44.89%  internal/poll.(*FD).Write
+     0.01s 0.015% 93.42%      7.92s 12.18%  net/http.(*http2Framer).ReadFrameForHeader
+     0.01s 0.015% 93.43%      0.50s  0.77%  net/http.(*http2responseWriterState).writeChunk
+     0.01s 0.015% 93.45%      0.50s  0.77%  net/http.(*http2serverConn).processFrame
+     0.01s 0.015% 93.46%     29.36s 45.17%  net/http.(*http2serverConn).writeFrameAsync
+     0.01s 0.015% 93.48%      1.39s  2.14%  runtime.(*mheap).allocSpan
+     0.01s 0.015% 93.49%      0.33s  0.51%  runtime.bgsweep
+     0.01s 0.015% 93.51%      6.94s 10.68%  runtime.park_m
+     0.01s 0.015% 93.52%      1.23s  1.89%  runtime.runqgrab

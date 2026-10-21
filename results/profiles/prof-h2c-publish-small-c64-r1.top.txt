@@ -1,0 +1,38 @@
+File: server
+Type: cpu
+Time: 2026-10-21 23:43:06 +05
+Duration: 20.12s, Total samples = 56.81s (282.31%)
+Showing nodes accounting for 52.93s, 93.17% of 56.81s total
+Dropped 400 nodes (cum <= 0.28s)
+Showing top 30 nodes out of 134
+      flat  flat%   sum%        cum   cum%
+    13.87s 24.41% 24.41%     13.87s 24.41%  syscall.rawsyscalln
+    13.02s 22.92% 47.33%     13.02s 22.92%  runtime.usleep
+    12.87s 22.65% 69.99%     12.87s 22.65%  runtime.kevent
+     7.63s 13.43% 83.42%      7.63s 13.43%  runtime.pthread_cond_wait
+     3.47s  6.11% 89.53%      3.47s  6.11%  runtime.pthread_cond_signal
+     0.47s  0.83% 90.35%      0.47s  0.83%  runtime.madvise
+     0.36s  0.63% 90.99%      0.43s  0.76%  runtime.tryDeferToSpanScan
+     0.35s  0.62% 91.60%      1.10s  1.94%  runtime.scanObject
+     0.17s   0.3% 91.90%      6.47s 11.39%  runtime.selectgo
+     0.12s  0.21% 92.11%      6.99s 12.30%  runtime.lock2
+     0.10s  0.18% 92.29%      0.72s  1.27%  runtime.unlock2
+     0.07s  0.12% 92.41%      0.53s  0.93%  runtime.mallocgc
+     0.07s  0.12% 92.54%      0.30s  0.53%  runtime.pcvalue
+     0.04s  0.07% 92.61%      3.51s  6.18%  runtime.gcDrain
+     0.04s  0.07% 92.68%     12.20s 21.48%  runtime.netpoll
+     0.04s  0.07% 92.75%      5.68s 10.00%  runtime.sellock
+     0.04s  0.07% 92.82%      7.47s 13.15%  runtime.stealWork
+     0.03s 0.053% 92.87%      7.39s 13.01%  runtime.runqgrab
+     0.03s 0.053% 92.92%      0.30s  0.53%  runtime.scanSpan
+     0.02s 0.035% 92.96%      0.96s  1.69%  encoding/json.(*Decoder).readValue
+     0.02s 0.035% 92.99%      0.33s  0.58%  runtime.mallocgcSmallScanNoHeader
+     0.02s 0.035% 93.03%      3.18s  5.60%  runtime.wakep
+     0.01s 0.018% 93.05%      0.35s  0.62%  encoding/json.(*decodeState).literalStore
+     0.01s 0.018% 93.06%      0.44s  0.77%  encoding/json.(*decodeState).object
+     0.01s 0.018% 93.08%      0.45s  0.79%  encoding/json.(*decodeState).unmarshal
+     0.01s 0.018% 93.10%      0.44s  0.77%  encoding/json.(*decodeState).value
+     0.01s 0.018% 93.12%      8.37s 14.73%  net/http.(*http2Framer).ReadFrame
+     0.01s 0.018% 93.14%      0.46s  0.81%  net/http.(*http2serverConn).processFrame
+     0.01s 0.018% 93.15%      0.33s  0.58%  net/http.(*http2serverConn).sendServeMsg
+     0.01s 0.018% 93.17%      2.42s  4.26%  net/http.HandlerFunc.ServeHTTP

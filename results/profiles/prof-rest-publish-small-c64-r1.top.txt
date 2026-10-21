@@ -1,0 +1,38 @@
+File: server
+Type: cpu
+Time: 2026-10-21 23:42:30 +05
+Duration: 20.11s, Total samples = 83.81s (416.81%)
+Showing nodes accounting for 79.53s, 94.89% of 83.81s total
+Dropped 444 nodes (cum <= 0.42s)
+Showing top 30 nodes out of 78
+      flat  flat%   sum%        cum   cum%
+    63.19s 75.40% 75.40%     63.19s 75.40%  syscall.rawsyscalln
+     5.28s  6.30% 81.70%      5.28s  6.30%  runtime.kevent
+     3.25s  3.88% 85.57%      3.25s  3.88%  runtime.usleep
+     2.25s  2.68% 88.26%      2.25s  2.68%  runtime.pthread_cond_wait
+     1.35s  1.61% 89.87%      1.64s  1.96%  runtime.tryDeferToSpanScan
+     1.16s  1.38% 91.25%      1.16s  1.38%  runtime.pthread_cond_signal
+     0.96s  1.15% 92.40%      0.96s  1.15%  runtime.madvise
+     0.92s  1.10% 93.50%      0.93s  1.11%  runtime.(*mspan).typePointersOfUnchecked
+     0.84s  1.00% 94.50%      3.66s  4.37%  runtime.scanObject
+     0.06s 0.072% 94.57%      5.34s  6.37%  runtime.gcDrain
+     0.05s  0.06% 94.63%      0.56s  0.67%  runtime.scanSpan
+     0.03s 0.036% 94.67%      1.28s  1.53%  runtime.lock2
+     0.03s 0.036% 94.70%      2.15s  2.57%  runtime.stealWork
+     0.02s 0.024% 94.73%      0.66s  0.79%  runtime.mallocgc
+     0.02s 0.024% 94.75%      0.49s  0.58%  runtime.mallocgcSmallScanNoHeader
+     0.02s 0.024% 94.77%      5.27s  6.29%  runtime.netpoll
+     0.01s 0.012% 94.79%     63.83s 76.16%  net/http.(*conn).serve
+     0.01s 0.012% 94.80%      2.09s  2.49%  net/http.(*connReader).backgroundRead
+     0.01s 0.012% 94.81%      1.04s  1.24%  runtime.(*mheap).allocSpan
+     0.01s 0.012% 94.82%      1.29s  1.54%  runtime.lockWithRank
+     0.01s 0.012% 94.83%      2.12s  2.53%  runtime.runqgrab
+     0.01s 0.012% 94.85%      7.14s  8.52%  runtime.systemstack
+     0.01s 0.012% 94.86%      1.36s  1.62%  sis2_highload/internal/httpapi.(*handler).publish
+     0.01s 0.012% 94.87%      1.74s  2.08%  sis2_highload/internal/httpapi.New.(*handler).withTimeout.func5
+     0.01s 0.012% 94.88%      0.42s   0.5%  sis2_highload/internal/store/memory.(*Store).CreateDeliveries
+     0.01s 0.012% 94.89%     63.23s 75.44%  syscall.syscalln
+         0     0% 94.89%     24.89s 29.70%  bufio.(*Reader).Peek
+         0     0% 94.89%     24.89s 29.70%  bufio.(*Reader).fill
+         0     0% 94.89%     36.54s 43.60%  bufio.(*Writer).Flush
+         0     0% 94.89%      0.59s   0.7%  encoding/json.(*Decoder).Decode
