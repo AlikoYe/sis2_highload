@@ -1,0 +1,12 @@
+bin/
+*.exe
+*.test
+*.out
+/server
+/loadgen
+/payloadsize
+coverage.*
+*.coverprofile
+results/*.tmp
+.DS_Store
+.idea/

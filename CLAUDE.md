@@ -1,0 +1,32 @@
+# sis2_highload — Notification ingest service
+
+## What this is
+University project (Backend for High-Load Environments). Go service implementing the producer-facing interface of a notification service: producers publish events; the service creates one delivery per channel (push/email) idempotently.
+
+## Requirements (from SIS #1 design)
+- ~3,000 events/s ingest, at-least-once delivery, delivery p99 < 5 s; ingest API p99 < 100 ms.
+- Primary protocol: gRPC (internal, high-volume, typed contract, deadlines, HTTP/2).
+- REST/JSON exists only as a measurement baseline of the same interface.
+
+## Architecture rules
+- One service layer (`internal/service`) holds ALL logic: validation, building deliveries, idempotency, response building.
+- Transports (`internal/grpcapi`, `internal/httpapi`) are thin adapters: decode -> call service -> encode, plus error mapping. No business logic in transports.
+- Storage behind an interface in `internal/store` (memory impl for protocol benchmarks, Postgres impl for real idempotency). SIS #3 will tune Postgres behind this interface; SIS #4 will add a cache decorator and Kafka publishing in the service. Keep these extension points clean.
+- Idempotency: `event_id` from the producer; Postgres uses `INSERT ... ON CONFLICT (event_id, channel) DO NOTHING RETURNING`; losers read existing rows and return the same response. Never check-then-insert.
+- Error mapping: invalid input -> gRPC INVALID_ARGUMENT / HTTP 400; overload -> RESOURCE_EXHAUSTED / 429; temporary failure -> UNAVAILABLE / 503.
+- Timeouts everywhere: honour context deadlines; server checks ctx before work; pass ctx to DB calls.
+- Retries only on the client side, one shared policy for both protocols: exponential backoff with full jitter, max attempts, retry budget, same event_id on every attempt.
+
+## Code style
+- Idiomatic, small, readable Go. Standard library first (net/http with Go 1.22 routing, log/slog).
+- Very few comments; no long comment blocks. Comment only non-obvious "why".
+- No unnecessary abstractions or frameworks.
+- Tests next to code (`_test.go`); table-driven where it helps.
+
+## Workflow
+- Work in phases; only do what the current phase asks. Stop and report at the end of each phase (what changed, commands run, results).
+- `make gen` regenerates code; `make test` must pass before finishing a phase.
+- Commit at the end of each phase with a clear message.
+
+## Not in SIS #2 scope
+Index tuning, partitioning, replicas (SIS #3); Redis, Kafka, workers, Kubernetes (SIS #4).

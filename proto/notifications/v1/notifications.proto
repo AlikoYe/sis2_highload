@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package notifications.v1;
+
+option go_package = "sis2_highload/gen/notifications/v1;notificationsv1";
+
+import "google/protobuf/timestamp.proto";
+
+service NotificationService {
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc PublishBatch(PublishBatchRequest) returns (PublishBatchResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+}
+
+enum Channel {
+  CHANNEL_UNSPECIFIED = 0;
+  CHANNEL_PUSH = 1;
+  CHANNEL_EMAIL = 2;
+}
+
+enum DeliveryStatus {
+  DELIVERY_STATUS_UNSPECIFIED = 0;
+  DELIVERY_STATUS_QUEUED = 1;
+  DELIVERY_STATUS_SENDING = 2;
+  DELIVERY_STATUS_RETRY = 3;
+  DELIVERY_STATUS_SENT = 4;
+  DELIVERY_STATUS_FAILED = 5;
+}
+
+message Event {
+  string event_id = 1;
+  string type = 2;
+  int64 user_id = 3;
+  map<string, string> payload = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}
+
+message Delivery {
+  Channel channel = 1;
+  DeliveryStatus status = 2;
+  int32 attempts = 3;
+}
+
+message PublishRequest {
+  Event event = 1;
+}
+
+message PublishResponse {
+  string event_id = 1;
+  repeated Delivery deliveries = 2;
+}
+
+message PublishBatchRequest {
+  repeated Event events = 1;
+}
+
+message PublishBatchResponse {
+  repeated PublishResponse results = 1;
+}
+
+message GetStatusRequest {
+  string event_id = 1;
+}
+
+message GetStatusResponse {
+  string event_id = 1;
+  repeated Delivery deliveries = 2;
+}
