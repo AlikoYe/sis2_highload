@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"strconv"
 	"strings"
 	"testing"
@@ -89,6 +90,48 @@ func TestRenderHasSections(t *testing.T) {
 	for _, want := range []string{"(a) Closed loop, memory store", "| c=64 |", "Ratios vs REST", "| 2.00 | 0.50 |"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("summary missing %q:\n%s", want, md)
+		}
+	}
+}
+
+func TestSummaryCSV(t *testing.T) {
+	in := header + "\n" +
+		row("mem-grpc-r1", "grpc", 64, 100, 900, 3000, "") + "\n" +
+		row("mem-grpc-r2", "grpc", 64, 300, 1100, 3000, "") + "\n" +
+		row("mem-grpc-r3", "grpc", 64, 200, 1000, 3000, "") + "\n" +
+		row("mem-rest-r1", "rest", 64, 50, 2000, 3000, "")
+	gs := groupRuns(mustRead(t, in, map[string]float64{"mem-grpc-r1": 60, "mem-grpc-r2": 60, "mem-grpc-r3": 60}))
+
+	var buf strings.Builder
+	if err := writeSummaryCSV(&buf, gs); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(strings.NewReader(buf.String())).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want header + 2 groups", len(rows))
+	}
+	col := map[string]int{}
+	for i, name := range rows[0] {
+		col[name] = i
+	}
+	grpc, rest := rows[1], rows[2]
+	for name, want := range map[string]string{
+		"variant": "grpc", "reps": "3", "rps_med": "200.0", "rps_min": "100.0", "rps_max": "300.0",
+		"p99_us_med": "1000.0", "server_cpu_us_per_req_med": "20.0", "retries": "6",
+	} {
+		if got := grpc[col[name]]; got != want {
+			t.Errorf("grpc %s = %q, want %q", name, got, want)
+		}
+	}
+	if rest[col["variant"]] != "rest" || rest[col["server_cpu_us_per_req_med"]] != "" {
+		t.Errorf("rest row: variant %q, server cpu %q (want empty when unknown)", rest[col["variant"]], rest[col["server_cpu_us_per_req_med"]])
+	}
+	for _, r := range rows {
+		if len(r) != len(summaryHeader) {
+			t.Fatalf("row has %d columns, header has %d", len(r), len(summaryHeader))
 		}
 	}
 }

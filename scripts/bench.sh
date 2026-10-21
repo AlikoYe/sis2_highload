@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the protocol benchmark matrix.
-# Usage: scripts/bench.sh quick|sample|investigate|full [--estimate]
+# Usage: scripts/bench.sh quick|sample|investigate|full|final [--estimate]
 # Env: SERVER_PROCS / LOADGEN_PROCS (GOMAXPROCS, default half the cores each),
 #      DATABASE_URL, MEMORY_MAX_EVENTS (default 1000000),
 #      FULL_H2C_EXTRA (extra h2c variant in the full matrix, default h2c4; empty disables).
@@ -38,8 +38,9 @@ case $PRESET in
 quick) DURATION_S=5 WARMUP_S=1 REPS=1 ;;
 sample | investigate) DURATION_S=30 WARMUP_S=5 REPS=1 ;;
 full) DURATION_S=30 WARMUP_S=5 REPS=3 ;;
+final) DURATION_S=20 WARMUP_S=3 REPS=3 ;;
 *)
-	echo "usage: $0 quick|sample|investigate|full [--estimate]" >&2
+	echo "usage: $0 quick|sample|investigate|full|final [--estimate]" >&2
 	exit 2
 	;;
 esac
@@ -48,6 +49,10 @@ TS=$(date +%Y%m%d-%H%M%S)
 OUT=results/bench_${PRESET}_${TS}.csv
 CPU_OUT=results/bench_${PRESET}_${TS}_server_cpu.csv
 LOG_DIR=results/logs/${PRESET}_${TS}
+ENV_OUT=results/env.txt
+if [ "$PRESET" = final ]; then
+	ENV_OUT=results/env_final.txt
+fi
 COUNT_ONLY=0
 RUN_COUNT=0
 SERVER_PID=""
@@ -70,7 +75,7 @@ write_env() {
 		echo "GOMAXPROCS: server=$SERVER_PROCS loadgen=$LOADGEN_PROCS"
 		echo "memory store cap: $MEMORY_MAX_EVENTS events (fresh server per run)"
 		echo "protocol order: interleaved per configuration, rotated each repetition"
-	} >results/env.txt
+	} >"$ENV_OUT"
 }
 
 cleanup() {
@@ -254,6 +259,33 @@ matrix_full() {
 	done
 }
 
+# Report run: 3 reps of the core comparison, Postgres and target load; 1 rep of status and reliability.
+matrix_final() {
+	local r c spec op payload variants
+	for r in $(seq 1 "$REPS"); do
+		for spec in publish:small publish:large batch:batch; do
+			op=${spec%%:*}
+			payload=${spec##*:}
+			for c in 1 64 256; do
+				variants=$PROTOCOLS
+				if [ "$spec" != publish:large ] && [ "$c" != 1 ]; then
+					variants="$PROTOCOLS h2c4"
+				fi
+				for_protocols "$r" "$variants" mem memory "$op" "$payload" closed "$c"
+			done
+		done
+		for c in 1 64; do
+			for_protocols "$r" "$PROTOCOLS" pg postgres publish small closed "$c"
+		done
+		for_protocols "$r" "$PROTOCOLS" mem memory publish small open 3000
+		for_protocols "$r" "$PROTOCOLS" pg postgres publish small open 3000
+	done
+	for c in 64 256; do
+		for_protocols 1 "$PROTOCOLS" mem memory status small closed "$c"
+	done
+	for_protocols 1 "$PROTOCOLS" rel memory publish small closed 64 -fault-fail-after=0.05
+}
+
 COUNT_ONLY=1
 "matrix_$PRESET"
 COUNT_ONLY=0
@@ -268,7 +300,7 @@ mkdir -p "$LOG_DIR"
 echo "building binaries"
 go build -o bin/server ./cmd/server
 go build -o bin/loadgen ./cmd/loadgen
-if [ "$PRESET" = full ]; then
+if [ "$PRESET" = full ] || [ "$PRESET" = final ]; then
 	ensure_postgres
 fi
 write_env

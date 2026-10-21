@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	out := flag.String("out", "results/summary.md", "markdown output path")
+	out := flag.String("out", "results/summary.md", "markdown output path; a .csv with the same name is written next to it")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: benchsummary [-out file] [bench.csv ...]  (default: results/bench_*.csv)")
 		flag.PrintDefaults()
@@ -53,11 +53,23 @@ func summarize(inputs []string, out string) error {
 	if len(runs) == 0 {
 		return errors.New("no runs found")
 	}
-	md := render(groupRuns(runs), files)
-	if err := os.WriteFile(out, []byte(md), 0o644); err != nil {
+	groups := groupRuns(runs)
+	if err := os.WriteFile(out, []byte(render(groups, files)), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s (%d runs from %d files)\n", out, len(runs), len(files))
+	csvOut := strings.TrimSuffix(out, filepath.Ext(out)) + ".csv"
+	f, err := os.Create(csvOut)
+	if err != nil {
+		return err
+	}
+	if err := writeSummaryCSV(f, groups); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s and %s (%d runs, %d groups, %d files)\n", out, csvOut, len(runs), len(groups), len(files))
 	return nil
 }
 
