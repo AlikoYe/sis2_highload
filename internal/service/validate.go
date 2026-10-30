@@ -15,12 +15,13 @@ const (
 	MaxPayloadBytes = 4 << 10
 )
 
-func (s *Service) prepare(ev domain.Event) (NewEvent, error) {
+// validate checks ev and returns it normalised (canonical id, UTC time) with its channels.
+func (s *Service) validate(ev domain.Event) (NewEvent, error) {
 	id, err := normalizeID(ev.ID)
 	if err != nil {
 		return NewEvent{}, err
 	}
-	channels, ok := rules[ev.Type]
+	channels, ok := channelsByType[ev.Type]
 	if !ok {
 		return NewEvent{}, fmt.Errorf("%w: unknown event type %q", domain.ErrInvalidArgument, ev.Type)
 	}
@@ -30,11 +31,7 @@ func (s *Service) prepare(ev domain.Event) (NewEvent, error) {
 	if len(ev.Payload) > MaxPayloadKeys {
 		return NewEvent{}, fmt.Errorf("%w: payload has %d keys, max %d", domain.ErrInvalidArgument, len(ev.Payload), MaxPayloadKeys)
 	}
-	size := 0
-	for k, v := range ev.Payload {
-		size += len(k) + len(v)
-	}
-	if size > MaxPayloadBytes {
+	if size := payloadSize(ev.Payload); size > MaxPayloadBytes {
 		return NewEvent{}, fmt.Errorf("%w: payload is %d bytes, max %d", domain.ErrInvalidArgument, size, MaxPayloadBytes)
 	}
 
@@ -44,6 +41,14 @@ func (s *Service) prepare(ev domain.Event) (NewEvent, error) {
 	}
 	ev.OccurredAt = ev.OccurredAt.UTC()
 	return NewEvent{Event: ev, Channels: slices.Clone(channels)}, nil
+}
+
+func payloadSize(payload map[string]string) int {
+	size := 0
+	for key, value := range payload {
+		size += len(key) + len(value)
+	}
+	return size
 }
 
 // normalizeID returns the canonical lowercase form so every store keys events identically.

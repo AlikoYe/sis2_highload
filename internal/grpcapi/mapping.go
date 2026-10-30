@@ -27,39 +27,47 @@ var (
 	statusFromProto  = invert(statusToProto)
 )
 
-func invert[K, V comparable](m map[K]V) map[V]K {
-	out := make(map[V]K, len(m))
-	for k, v := range m {
-		out[v] = k
+func invert[K, V comparable](forward map[K]V) map[V]K {
+	inverted := make(map[V]K, len(forward))
+	for k, v := range forward {
+		inverted[v] = k
 	}
-	return out
+	return inverted
 }
 
-func EventFromProto(e *pb.Event) domain.Event {
+func EventFromProto(event *pb.Event) domain.Event {
 	var occurredAt time.Time
-	if e.GetOccurredAt() != nil {
-		occurredAt = e.GetOccurredAt().AsTime()
+	if event.GetOccurredAt() != nil {
+		occurredAt = event.GetOccurredAt().AsTime()
 	}
 	return domain.Event{
-		ID:         e.GetEventId(),
-		Type:       e.GetType(),
-		UserID:     e.GetUserId(),
-		Payload:    e.GetPayload(),
+		ID:         event.GetEventId(),
+		Type:       event.GetType(),
+		UserID:     event.GetUserId(),
+		Payload:    event.GetPayload(),
 		OccurredAt: occurredAt,
 	}
 }
 
-func EventToProto(e domain.Event) *pb.Event {
-	out := &pb.Event{EventId: e.ID, Type: e.Type, UserId: e.UserID, Payload: e.Payload}
-	if !e.OccurredAt.IsZero() {
-		out.OccurredAt = timestamppb.New(e.OccurredAt)
+func EventToProto(event domain.Event) *pb.Event {
+	out := &pb.Event{EventId: event.ID, Type: event.Type, UserId: event.UserID, Payload: event.Payload}
+	if !event.OccurredAt.IsZero() {
+		out.OccurredAt = timestamppb.New(event.OccurredAt)
 	}
 	return out
 }
 
-func DeliveriesToProto(ds []domain.Delivery) []*pb.Delivery {
-	out := make([]*pb.Delivery, len(ds))
-	for i, d := range ds {
+func EventsToProto(events []domain.Event) []*pb.Event {
+	out := make([]*pb.Event, len(events))
+	for i, event := range events {
+		out[i] = EventToProto(event)
+	}
+	return out
+}
+
+func DeliveriesToProto(deliveries []domain.Delivery) []*pb.Delivery {
+	out := make([]*pb.Delivery, len(deliveries))
+	for i, d := range deliveries {
 		out[i] = &pb.Delivery{
 			Channel:  channelToProto[d.Channel],
 			Status:   statusToProto[d.Status],
@@ -69,9 +77,9 @@ func DeliveriesToProto(ds []domain.Delivery) []*pb.Delivery {
 	return out
 }
 
-func ResultFromProto(eventID string, ds []*pb.Delivery) domain.Result {
-	out := make([]domain.Delivery, len(ds))
-	for i, d := range ds {
+func ResultFromProto(eventID string, deliveries []*pb.Delivery) domain.Result {
+	out := make([]domain.Delivery, len(deliveries))
+	for i, d := range deliveries {
 		out[i] = domain.Delivery{
 			EventID:  eventID,
 			Channel:  channelFromProto[d.GetChannel()],
@@ -82,6 +90,22 @@ func ResultFromProto(eventID string, ds []*pb.Delivery) domain.Result {
 	return domain.NewResult(eventID, out)
 }
 
-func PublishResponse(r domain.Result) *pb.PublishResponse {
-	return &pb.PublishResponse{EventId: r.EventID, Deliveries: DeliveriesToProto(r.Deliveries)}
+func ResultsFromProto(resp *pb.PublishBatchResponse) []domain.Result {
+	results := make([]domain.Result, len(resp.GetResults()))
+	for i, r := range resp.GetResults() {
+		results[i] = ResultFromProto(r.GetEventId(), r.GetDeliveries())
+	}
+	return results
+}
+
+func PublishResponse(result domain.Result) *pb.PublishResponse {
+	return &pb.PublishResponse{EventId: result.EventID, Deliveries: DeliveriesToProto(result.Deliveries)}
+}
+
+func PublishBatchResponse(results []domain.Result) *pb.PublishBatchResponse {
+	out := make([]*pb.PublishResponse, len(results))
+	for i, result := range results {
+		out[i] = PublishResponse(result)
+	}
+	return &pb.PublishBatchResponse{Results: out}
 }

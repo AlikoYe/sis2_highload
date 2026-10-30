@@ -22,7 +22,7 @@ func (s *Service) Publish(ctx context.Context, ev domain.Event) (domain.Result, 
 	if err := ctx.Err(); err != nil {
 		return domain.Result{}, err
 	}
-	item, err := s.prepare(ev)
+	item, err := s.validate(ev)
 	if err != nil {
 		return domain.Result{}, err
 	}
@@ -42,7 +42,7 @@ func (s *Service) PublishBatch(ctx context.Context, events []domain.Event) ([]do
 	}
 	items := make([]NewEvent, len(events))
 	for i, ev := range events {
-		item, err := s.prepare(ev)
+		item, err := s.validate(ev)
 		if err != nil {
 			return nil, fmt.Errorf("events[%d]: %w", i, err)
 		}
@@ -59,17 +59,17 @@ func (s *Service) GetStatus(ctx context.Context, eventID string) (domain.Result,
 	if err != nil {
 		return domain.Result{}, err
 	}
-	ds, err := s.store.GetDeliveries(ctx, id)
+	deliveries, err := s.store.GetDeliveries(ctx, id)
 	if err != nil {
-		return domain.Result{}, storeErr(err)
+		return domain.Result{}, wrapStoreErr(err)
 	}
-	return domain.NewResult(id, ds), nil
+	return domain.NewResult(id, deliveries), nil
 }
 
 func (s *Service) create(ctx context.Context, items []NewEvent) ([]domain.Result, error) {
 	results, err := s.store.CreateDeliveries(ctx, items)
 	if err != nil {
-		return nil, storeErr(err)
+		return nil, wrapStoreErr(err)
 	}
 	if len(results) != len(items) {
 		return nil, fmt.Errorf("%w: store returned %d results for %d events", domain.ErrUnavailable, len(results), len(items))
@@ -77,10 +77,12 @@ func (s *Service) create(ctx context.Context, items []NewEvent) ([]domain.Result
 	return results, nil
 }
 
-// storeErr passes our sentinel errors through and maps everything else
+var domainErrors = []error{domain.ErrInvalidArgument, domain.ErrNotFound, domain.ErrUnavailable, domain.ErrOverloaded}
+
+// wrapStoreErr passes our sentinel errors through and maps everything else
 // (connection loss, timeouts) to ErrUnavailable, keeping the cause wrapped.
-func storeErr(err error) error {
-	for _, known := range []error{domain.ErrInvalidArgument, domain.ErrNotFound, domain.ErrUnavailable, domain.ErrOverloaded} {
+func wrapStoreErr(err error) error {
+	for _, known := range domainErrors {
 		if errors.Is(err, known) {
 			return err
 		}

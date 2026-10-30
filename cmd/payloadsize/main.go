@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -30,6 +31,11 @@ import (
 	"sis2_highload/internal/service"
 	"sis2_highload/internal/store/memory"
 	"sis2_highload/internal/workload"
+)
+
+const (
+	callTimeout = 5 * time.Second
+	idSeed      = 42 // fixed so body sizes are reproducible
 )
 
 func main() {
@@ -51,15 +57,16 @@ type bodyRow struct {
 }
 
 type wireRow struct {
-	scenario workload.Kind
-	protocol string
-	up, down float64 // average bytes per request, client->server and server->client
+	scenario       workload.Kind
+	protocol       string
+	clientToServer float64 // average bytes per request
+	serverToClient float64
 }
 
 func run(n, warmup int, outDir string) error {
 	var bodies []bodyRow
-	for _, k := range workload.Kinds {
-		row, err := bodySizes(k)
+	for _, kind := range workload.Kinds {
+		row, err := bodySizes(kind)
 		if err != nil {
 			return err
 		}
@@ -82,21 +89,21 @@ func run(n, warmup int, outDir string) error {
 	return writeCSV(filepath.Join(outDir, "payload_sizes.csv"), bodies, wire)
 }
 
-func bodySizes(k workload.Kind) (bodyRow, error) {
+func bodySizes(kind workload.Kind) (bodyRow, error) {
 	var protoReq, protoResp proto.Message
 	var jsonReq, jsonResp any
-	if k == workload.Batch {
-		es := workload.BatchEvents(fixedIDs(workload.BatchSize))
-		rs := workload.Results(es)
-		protoReq, protoResp = workload.ProtoBatchRequest(es), workload.ProtoBatchResponse(rs)
-		jsonReq, jsonResp = workload.JSONBatchRequest(es), workload.JSONBatchResponse(rs)
+	if kind == workload.Batch {
+		events := workload.BatchEvents(fixedIDs(workload.BatchSize))
+		results := workload.Results(events)
+		protoReq, protoResp = workload.ProtoBatchRequest(events), workload.ProtoBatchResponse(results)
+		jsonReq, jsonResp = workload.JSONBatchRequest(events), workload.JSONBatchResponse(results)
 	} else {
-		e := workload.Event(k, fixedIDs(1)[0])
-		r := workload.Result(e)
-		protoReq, protoResp = workload.ProtoRequest(e), workload.ProtoResponse(r)
-		jsonReq, jsonResp = workload.JSONRequest(e), workload.JSONResponse(r)
+		event := workload.Event(kind, fixedIDs(1)[0])
+		result := workload.Result(event)
+		protoReq, protoResp = workload.ProtoRequest(event), workload.ProtoResponse(result)
+		jsonReq, jsonResp = workload.JSONRequest(event), workload.JSONResponse(result)
 	}
-	row := bodyRow{scenario: k, protoReq: proto.Size(protoReq), protoResp: proto.Size(protoResp)}
+	row := bodyRow{scenario: kind, protoReq: proto.Size(protoReq), protoResp: proto.Size(protoResp)}
 	var err error
 	if row.jsonReq, row.gzipReq, err = jsonSizes(jsonReq); err != nil {
 		return row, err
@@ -110,7 +117,7 @@ func bodySizes(k workload.Kind) (bodyRow, error) {
 // fixedIDs returns seeded pseudo-random UUIDs: reproducible sizes, but ids that
 // do not compress unrealistically well in the gzip column.
 func fixedIDs(n int) []string {
-	rng := rand.NewChaCha8([32]byte{42})
+	rng := rand.NewChaCha8([32]byte{idSeed})
 	ids := make([]string, n)
 	for i := range ids {
 		ids[i] = uuid.Must(uuid.NewRandomFromReader(rng)).String()
@@ -123,15 +130,15 @@ func jsonSizes(v any) (plain, gzipped int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write(raw); err != nil {
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write(raw); err != nil {
 		return 0, 0, err
 	}
-	if err := zw.Close(); err != nil {
+	if err := gz.Close(); err != nil {
 		return 0, 0, err
 	}
-	return len(raw), buf.Len(), nil
+	return len(raw), compressed.Len(), nil
 }
 
 // countingListener counts bytes on the server side of every accepted connection.
@@ -141,123 +148,147 @@ type countingListener struct {
 }
 
 func (l *countingListener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
+	conn, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	return &countingConn{Conn: c, l: l}, nil
+	return &countingConn{Conn: conn, listener: l}, nil
 }
 
 func (l *countingListener) reset() { l.read.Store(0); l.written.Store(0) }
 
 type countingConn struct {
 	net.Conn
-	l *countingListener
+	listener *countingListener
 }
 
 func (c *countingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	c.l.read.Add(int64(n))
+	c.listener.read.Add(int64(n))
 	return n, err
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
-	c.l.written.Add(int64(n))
+	c.listener.written.Add(int64(n))
 	return n, err
 }
 
 func listen() (*countingListener, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	return &countingListener{Listener: l}, nil
+	return &countingListener{Listener: lis}, nil
 }
 
 type endpoint struct {
-	name   string
-	lis    *countingListener
-	client client.Client
+	name     string
+	listener *countingListener
+	client   client.Client
 }
 
 func wireSizes(n, warmup int) ([]wireRow, error) {
+	endpoints, stop, err := startEndpoints()
+	if err != nil {
+		return nil, err
+	}
+	defer stop()
+
+	var rows []wireRow
+	for _, kind := range workload.Kinds {
+		for _, ep := range endpoints {
+			row, err := measureWire(ep, kind, n, warmup)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
+// startEndpoints serves one in-memory service over gRPC, REST/HTTP1.1 and REST/h2c
+// on loopback, each behind a byte-counting listener, and returns a client for each.
+func startEndpoints() ([]endpoint, func(), error) {
 	log := slog.New(slog.DiscardHandler)
 	st := memory.New()
 	svc := service.New(st)
-	opts := client.Options{CallTimeout: 5 * time.Second}
+	handler := httpapi.New(svc, st, log, nil)
+	opts := client.Options{CallTimeout: callTimeout}
 
-	grpcLis, err := listen()
-	if err != nil {
-		return nil, err
+	var stops []func()
+	stopAll := func() {
+		for _, stop := range slices.Backward(stops) {
+			stop()
+		}
 	}
+	listeners := make([]*countingListener, 3)
+	for i := range listeners {
+		lis, err := listen()
+		if err != nil {
+			stopAll()
+			return nil, nil, err
+		}
+		listeners[i] = lis
+	}
+	grpcLis, httpLis, h2cLis := listeners[0], listeners[1], listeners[2]
+
 	grpcSrv, _ := grpcapi.New(svc, log, nil)
 	go func() { _ = grpcSrv.Serve(grpcLis) }()
-	defer grpcSrv.Stop()
+	stops = append(stops, grpcSrv.Stop)
 
-	handler := httpapi.New(svc, st, log, nil)
-	httpLis, err := listen()
-	if err != nil {
-		return nil, err
-	}
 	httpSrv := &http.Server{Handler: handler}
 	go func() { _ = httpSrv.Serve(httpLis) }()
-	defer httpSrv.Close()
+	stops = append(stops, func() { _ = httpSrv.Close() })
 
-	h2cLis, err := listen()
-	if err != nil {
-		return nil, err
-	}
 	h2cSrv := &http.Server{Handler: handler, Protocols: new(http.Protocols)}
 	h2cSrv.Protocols.SetUnencryptedHTTP2(true)
 	go func() { _ = h2cSrv.Serve(h2cLis) }()
-	defer h2cSrv.Close()
+	stops = append(stops, func() { _ = h2cSrv.Close() })
 
 	grpcClient, err := client.NewGRPC(grpcLis.Addr().String(), opts)
 	if err != nil {
-		return nil, err
+		stopAll()
+		return nil, nil, err
 	}
 	endpoints := []endpoint{
 		{"gRPC", grpcLis, grpcClient},
 		{"REST/HTTP1.1", httpLis, client.NewREST("http://"+httpLis.Addr().String(), opts)},
 		{"REST/h2c", h2cLis, client.NewRESTH2C("http://"+h2cLis.Addr().String(), opts)},
 	}
-	defer func() {
-		for _, ep := range endpoints {
-			_ = ep.client.Close()
-		}
-	}()
+	for _, ep := range endpoints {
+		stops = append(stops, func() { _ = ep.client.Close() })
+	}
+	return endpoints, stopAll, nil
+}
 
-	var rows []wireRow
-	for _, k := range workload.Kinds {
-		for _, ep := range endpoints {
-			send := sender(ep.client, k)
-			for range warmup {
-				if err := send(); err != nil {
-					return nil, fmt.Errorf("%s %s warm-up: %w", ep.name, k, err)
-				}
-			}
-			ep.lis.reset()
-			for range n {
-				if err := send(); err != nil {
-					return nil, fmt.Errorf("%s %s: %w", ep.name, k, err)
-				}
-			}
-			rows = append(rows, wireRow{
-				scenario: k,
-				protocol: ep.name,
-				up:       float64(ep.lis.read.Load()) / float64(n),
-				down:     float64(ep.lis.written.Load()) / float64(n),
-			})
+// measureWire warms the connection up, then averages socket bytes over n requests.
+func measureWire(ep endpoint, kind workload.Kind, n, warmup int) (wireRow, error) {
+	send := sender(ep.client, kind)
+	for range warmup {
+		if err := send(); err != nil {
+			return wireRow{}, fmt.Errorf("%s %s warm-up: %w", ep.name, kind, err)
 		}
 	}
-	return rows, nil
+	ep.listener.reset()
+	for range n {
+		if err := send(); err != nil {
+			return wireRow{}, fmt.Errorf("%s %s: %w", ep.name, kind, err)
+		}
+	}
+	return wireRow{
+		scenario:       kind,
+		protocol:       ep.name,
+		clientToServer: float64(ep.listener.read.Load()) / float64(n),
+		serverToClient: float64(ep.listener.written.Load()) / float64(n),
+	}, nil
 }
 
 // sender publishes fresh events so every request is a real insert.
-func sender(c client.Client, k workload.Kind) func() error {
+func sender(c client.Client, kind workload.Kind) func() error {
 	ctx := context.Background()
-	if k == workload.Batch {
+	if kind == workload.Batch {
 		return func() error {
 			ids := make([]string, workload.BatchSize)
 			for i := range ids {
@@ -268,7 +299,7 @@ func sender(c client.Client, k workload.Kind) func() error {
 		}
 	}
 	return func() error {
-		_, err := c.Publish(ctx, workload.Event(k, client.NewEventID()))
+		_, err := c.Publish(ctx, workload.Event(kind, client.NewEventID()))
 		return err
 	}
 }
@@ -290,7 +321,8 @@ func markdown(bodies []bodyRow, wire []wireRow, n int) string {
 	b.WriteString("| scenario | protocol | client→server | server→client | total |\n")
 	b.WriteString("|---|---|---:|---:|---:|\n")
 	for _, r := range wire {
-		fmt.Fprintf(&b, "| %s | %s | %.0f | %.0f | %.0f |\n", r.scenario, r.protocol, r.up, r.down, r.up+r.down)
+		fmt.Fprintf(&b, "| %s | %s | %.0f | %.0f | %.0f |\n",
+			r.scenario, r.protocol, r.clientToServer, r.serverToClient, r.clientToServer+r.serverToClient)
 	}
 	return b.String()
 }
@@ -306,22 +338,23 @@ func writeCSV(path string, bodies []bodyRow, wire []wireRow) error {
 	_ = w.Write([]string{"kind", "scenario", "protocol", "encoding", "direction", "bytes"})
 	itoa := strconv.Itoa
 	for _, r := range bodies {
-		s := string(r.scenario)
-		for _, rec := range [][]string{
-			{"body", s, "", "proto", "request", itoa(r.protoReq)},
-			{"body", s, "", "json", "request", itoa(r.jsonReq)},
-			{"body", s, "", "json_gzip", "request", itoa(r.gzipReq)},
-			{"body", s, "", "proto", "response", itoa(r.protoResp)},
-			{"body", s, "", "json", "response", itoa(r.jsonResp)},
-			{"body", s, "", "json_gzip", "response", itoa(r.gzipResp)},
+		scenario := string(r.scenario)
+		for _, record := range [][]string{
+			{"body", scenario, "", "proto", "request", itoa(r.protoReq)},
+			{"body", scenario, "", "json", "request", itoa(r.jsonReq)},
+			{"body", scenario, "", "json_gzip", "request", itoa(r.gzipReq)},
+			{"body", scenario, "", "proto", "response", itoa(r.protoResp)},
+			{"body", scenario, "", "json", "response", itoa(r.jsonResp)},
+			{"body", scenario, "", "json_gzip", "response", itoa(r.gzipResp)},
 		} {
-			_ = w.Write(rec)
+			_ = w.Write(record)
 		}
 	}
 	ftoa := func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }
 	for _, r := range wire {
-		_ = w.Write([]string{"wire", string(r.scenario), r.protocol, "", "client_to_server", ftoa(r.up)})
-		_ = w.Write([]string{"wire", string(r.scenario), r.protocol, "", "server_to_client", ftoa(r.down)})
+		scenario := string(r.scenario)
+		_ = w.Write([]string{"wire", scenario, r.protocol, "", "client_to_server", ftoa(r.clientToServer)})
+		_ = w.Write([]string{"wire", scenario, r.protocol, "", "server_to_client", ftoa(r.serverToClient)})
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {

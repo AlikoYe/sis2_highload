@@ -36,9 +36,9 @@ type handler struct {
 	faults *faults.Injector
 }
 
-// New returns the REST handler. inj may be nil; it applies to /v1 routes only.
-func New(svc *service.Service, ready Pinger, log *slog.Logger, inj *faults.Injector) http.Handler {
-	h := &handler{svc: svc, ready: ready, log: log, faults: inj}
+// New returns the REST handler. injector may be nil; it applies to /v1 routes only.
+func New(svc *service.Service, ready Pinger, log *slog.Logger, injector *faults.Injector) http.Handler {
+	h := &handler{svc: svc, ready: ready, log: log, faults: injector}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/events", h.withFaults(h.publish))
 	mux.HandleFunc("POST /v1/events/batch", h.withFaults(h.publishBatch))
@@ -50,45 +50,37 @@ func New(svc *service.Service, ready Pinger, log *slog.Logger, inj *faults.Injec
 
 func (h *handler) publish(w http.ResponseWriter, r *http.Request) {
 	var req Event
-	if !h.decode(w, r, &req) {
+	if !h.decodeJSON(w, r, &req) {
 		return
 	}
-	res, err := h.svc.Publish(r.Context(), req.ToDomain())
+	result, err := h.svc.Publish(r.Context(), req.ToDomain())
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, ResultFromDomain(res))
+	writeJSON(w, http.StatusAccepted, ResultFromDomain(result))
 }
 
 func (h *handler) publishBatch(w http.ResponseWriter, r *http.Request) {
 	var req BatchRequest
-	if !h.decode(w, r, &req) {
+	if !h.decodeJSON(w, r, &req) {
 		return
 	}
-	events := make([]domain.Event, len(req.Events))
-	for i, e := range req.Events {
-		events[i] = e.ToDomain()
-	}
-	results, err := h.svc.PublishBatch(r.Context(), events)
+	results, err := h.svc.PublishBatch(r.Context(), req.ToDomain())
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	out := BatchResponse{Results: make([]Result, len(results))}
-	for i, res := range results {
-		out.Results[i] = ResultFromDomain(res)
-	}
-	writeJSON(w, http.StatusAccepted, out)
+	writeJSON(w, http.StatusAccepted, BatchResponseFromDomain(results))
 }
 
 func (h *handler) getStatus(w http.ResponseWriter, r *http.Request) {
-	res, err := h.svc.GetStatus(r.Context(), r.PathValue("id"))
+	result, err := h.svc.GetStatus(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, ResultFromDomain(res))
+	writeJSON(w, http.StatusOK, ResultFromDomain(result))
 }
 
 func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +92,7 @@ func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *handler) decode(w http.ResponseWriter, r *http.Request, v any) bool {
+func (h *handler) decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		h.writeError(w, r, fmt.Errorf("%w: malformed JSON body: %v", domain.ErrInvalidArgument, err))
@@ -113,8 +105,8 @@ func (h *handler) decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func (h *handler) withTimeout(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		timeout := DefaultTimeout
-		if v := r.Header.Get(TimeoutHeader); v != "" {
-			ms, err := strconv.Atoi(v)
+		if header := r.Header.Get(TimeoutHeader); header != "" {
+			ms, err := strconv.Atoi(header)
 			if err != nil || ms <= 0 {
 				h.writeError(w, r, fmt.Errorf("%w: %s must be a positive integer", domain.ErrInvalidArgument, TimeoutHeader))
 				return
@@ -130,11 +122,11 @@ func (h *handler) withTimeout(next http.Handler) http.Handler {
 func (h *handler) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			if v := recover(); v != nil {
-				if v == http.ErrAbortHandler {
-					panic(v)
+			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
 				}
-				h.writeError(w, r, fmt.Errorf("panic in %s %s: %v", r.Method, r.URL.Path, v))
+				h.writeError(w, r, fmt.Errorf("panic in %s %s: %v", r.Method, r.URL.Path, recovered))
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -152,26 +144,28 @@ func (h *handler) withFaults(next http.HandlerFunc) http.HandlerFunc {
 			respondError(w, err)
 			return
 		}
-		buf := &bufferedWriter{header: make(http.Header)}
-		next(buf, r)
-		if buf.status < 400 && h.faults.LoseResponse() {
+		buffered := &bufferedWriter{header: make(http.Header)}
+		next(buffered, r)
+		succeeded := buffered.status < http.StatusBadRequest
+		if succeeded && h.faults.LoseResponse() {
 			respondError(w, faults.ErrLostResponse)
 			return
 		}
-		buf.flushTo(w)
+		buffered.flushTo(w)
 	}
 }
 
 func (h *handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
-	if m := apierr.Of(err); m.Log {
-		h.log.ErrorContext(r.Context(), "http request failed", "code", m.Code, "method", r.Method, "path", r.URL.Path, "err", err)
+	if mapping := apierr.Of(err); mapping.Log {
+		h.log.ErrorContext(r.Context(), "http request failed",
+			"code", mapping.Code, "method", r.Method, "path", r.URL.Path, "err", err)
 	}
 	respondError(w, err)
 }
 
 func respondError(w http.ResponseWriter, err error) {
-	m := apierr.Of(err)
-	writeJSON(w, m.HTTP, ErrorResponse{Error: ErrorBody{Code: m.Code, Message: m.Message(err)}})
+	mapping := apierr.Of(err)
+	writeJSON(w, mapping.HTTP, ErrorResponse{Error: ErrorBody{Code: mapping.Code, Message: mapping.Message(err)}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

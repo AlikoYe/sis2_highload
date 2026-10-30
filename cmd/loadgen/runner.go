@@ -15,8 +15,9 @@ import (
 type request func(ctx context.Context) error
 
 const (
-	minLatencyUS = 1
-	maxLatencyUS = 60_000_000
+	minLatencyUS     = 1
+	maxLatencyUS     = 60_000_000
+	histogramSigFigs = 3
 )
 
 // recorder collects outcomes of requests that started inside the measured window.
@@ -28,25 +29,26 @@ type recorder struct {
 }
 
 func newRecorder() *recorder {
-	return &recorder{hist: hdrhistogram.New(minLatencyUS, maxLatencyUS, 3), byCode: map[string]int64{}}
+	return &recorder{hist: hdrhistogram.New(minLatencyUS, maxLatencyUS, histogramSigFigs), byCode: map[string]int64{}}
 }
 
-func (r *recorder) record(lat time.Duration, err error) {
+func (r *recorder) record(latency time.Duration, err error) {
 	if err != nil {
 		r.errs++
 		r.byCode[apierr.Of(err).Code]++
 		return
 	}
 	r.ok++
-	_ = r.hist.RecordValue(min(max(lat.Microseconds(), minLatencyUS), maxLatencyUS))
+	latencyUS := min(max(latency.Microseconds(), minLatencyUS), maxLatencyUS)
+	_ = r.hist.RecordValue(latencyUS)
 }
 
-func (r *recorder) merge(o *recorder) {
-	r.hist.Merge(o.hist)
-	r.ok += o.ok
-	r.errs += o.errs
-	for k, v := range o.byCode {
-		r.byCode[k] += v
+func (r *recorder) merge(other *recorder) {
+	r.hist.Merge(other.hist)
+	r.ok += other.ok
+	r.errs += other.errs
+	for code, count := range other.byCode {
+		r.byCode[code] += count
 	}
 }
 
@@ -56,29 +58,29 @@ type window struct {
 }
 
 // runClosed runs n workers back to back; latency is measured from just before each call.
-func runClosed(n int, w window, next func(worker int) request) *recorder {
-	recs := make([]*recorder, n)
+func runClosed(workers int, timeline window, next func(worker int) request) *recorder {
+	perWorker := make([]*recorder, workers)
 	var wg sync.WaitGroup
-	for i := range n {
-		recs[i] = newRecorder()
+	for worker := range workers {
+		perWorker[worker] = newRecorder()
 		wg.Go(func() {
 			for {
-				req := next(i)
-				t0 := time.Now()
-				if !t0.Before(w.end) {
+				req := next(worker)
+				started := time.Now()
+				if !started.Before(timeline.end) {
 					return
 				}
 				err := req(context.Background())
-				if !t0.Before(w.measureStart) {
-					recs[i].record(time.Since(t0), err)
+				if !started.Before(timeline.measureStart) {
+					perWorker[worker].record(time.Since(started), err)
 				}
 			}
 		})
 	}
 	wg.Wait()
 	total := newRecorder()
-	for _, r := range recs {
-		total.merge(r)
+	for _, rec := range perWorker {
+		total.merge(rec)
 	}
 	return total
 }
@@ -97,8 +99,8 @@ type openLoop struct {
 const spinWindow = 500 * time.Microsecond
 
 func preciseWait(until time.Time) {
-	if d := time.Until(until) - spinWindow; d > 0 {
-		time.Sleep(d)
+	if sleepFor := time.Until(until) - spinWindow; sleepFor > 0 {
+		time.Sleep(sleepFor)
 	}
 	for time.Now().Before(until) {
 		runtime.Gosched()
@@ -111,7 +113,7 @@ func (o openLoop) scheduled(start time.Time, i int) time.Time {
 
 // run returns the recorder and how many measured requests were dropped because
 // maxInflight requests were already outstanding at their scheduled time.
-func (o openLoop) run(w window, next func(i int) request) (*recorder, int64) {
+func (o openLoop) run(timeline window, next func(i int) request) (*recorder, int64) {
 	wait := o.wait
 	if wait == nil {
 		wait = preciseWait
@@ -124,12 +126,12 @@ func (o openLoop) run(w window, next func(i int) request) (*recorder, int64) {
 		slots   = make(chan struct{}, o.maxInflight)
 	)
 	for i := 0; ; i++ {
-		at := o.scheduled(w.start, i)
-		if !at.Before(w.end) {
+		at := o.scheduled(timeline.start, i)
+		if !at.Before(timeline.end) {
 			break
 		}
 		wait(at)
-		measured := !at.Before(w.measureStart)
+		measured := !at.Before(timeline.measureStart)
 		select {
 		case slots <- struct{}{}:
 		default:
@@ -143,9 +145,9 @@ func (o openLoop) run(w window, next func(i int) request) (*recorder, int64) {
 			defer func() { <-slots }()
 			err := req(context.Background())
 			if measured {
-				lat := time.Since(at)
+				latency := time.Since(at)
 				mu.Lock()
-				rec.record(lat, err)
+				rec.record(latency, err)
 				mu.Unlock()
 			}
 		})

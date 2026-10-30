@@ -100,9 +100,9 @@ func TestErrorMapping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fs := newFakeStore()
-			tt.store(fs)
-			h := newHarness(t, fs)
+			fake := newFakeStore()
+			tt.store(fake)
+			h := newHarness(t, fake)
 			id := newID()
 
 			t.Run("gRPC", func(t *testing.T) {
@@ -159,31 +159,31 @@ func TestRESTBadRequests(t *testing.T) {
 }
 
 func TestDeadlines(t *testing.T) {
-	waitObserved := func(t *testing.T, fs *fakeStore) {
+	waitObserved := func(t *testing.T, fake *fakeStore) {
 		t.Helper()
 		select {
-		case <-fs.done:
+		case <-fake.done:
 		case <-time.After(2 * time.Second):
 			t.Fatal("store never observed ctx cancellation")
 		}
 	}
 
 	t.Run("gRPC", func(t *testing.T) {
-		fs := newFakeStore()
-		fs.block = true
-		h := newHarness(t, fs)
+		fake := newFakeStore()
+		fake.block = true
+		h := newHarness(t, fake)
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 		_, err := h.grpc.Publish(ctx, &pb.PublishRequest{Event: grpcEvent(newID(), "order.shipped")})
 		if status.Code(err) != codes.DeadlineExceeded {
 			t.Fatalf("err = %v, want DeadlineExceeded", err)
 		}
-		waitObserved(t, fs)
+		waitObserved(t, fake)
 	})
 	t.Run("REST", func(t *testing.T) {
-		fs := newFakeStore()
-		fs.block = true
-		h := newHarness(t, fs)
+		fake := newFakeStore()
+		fake.block = true
+		h := newHarness(t, fake)
 		start := time.Now()
 		code, raw := h.do(t, http.MethodPost, "/v1/events", restEvent(newID(), "order.shipped"),
 			http.Header{"X-Request-Timeout-Ms": {"50"}})
@@ -193,7 +193,7 @@ func TestDeadlines(t *testing.T) {
 		if took := time.Since(start); took > time.Second {
 			t.Fatalf("took %v, header timeout not applied", took)
 		}
-		waitObserved(t, fs)
+		waitObserved(t, fake)
 	})
 }
 
@@ -290,9 +290,9 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("gRPC health = %v, %v; want SERVING", resp.GetStatus(), err)
 	}
 
-	fs := newFakeStore()
-	fs.pingErr = errors.New("db down")
-	down := newHarness(t, fs)
+	fake := newFakeStore()
+	fake.pingErr = errors.New("db down")
+	down := newHarness(t, fake)
 	if code, _ := down.do(t, http.MethodGet, "/readyz", nil, nil); code != http.StatusServiceUnavailable {
 		t.Fatalf("/readyz with failing ping = %d, want 503", code)
 	}

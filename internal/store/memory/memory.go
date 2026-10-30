@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 
 	"sis2_highload/internal/domain"
@@ -10,13 +12,13 @@ import (
 )
 
 type Store struct {
-	mu   sync.Mutex
-	data map[string]map[domain.Channel]domain.Delivery
+	mu      sync.Mutex
+	byEvent map[string]map[domain.Channel]domain.Delivery
 
 	// Optional FIFO cap so long benchmarks do not grow the heap without bound.
-	maxEvents int
-	order     []string
-	next      int
+	maxEvents      int
+	insertionOrder []string // ring buffer of event ids once full
+	oldest         int      // index of the next id to evict
 }
 
 func New() *Store { return NewBounded(0) }
@@ -24,20 +26,20 @@ func New() *Store { return NewBounded(0) }
 // NewBounded keeps at most maxEvents events, evicting the oldest first; 0 means unbounded.
 // Idempotency then only holds for the most recent maxEvents events.
 func NewBounded(maxEvents int) *Store {
-	return &Store{data: make(map[string]map[domain.Channel]domain.Delivery), maxEvents: maxEvents}
+	return &Store{byEvent: make(map[string]map[domain.Channel]domain.Delivery), maxEvents: maxEvents}
 }
 
-func (s *Store) track(id string) {
+func (s *Store) trackForEviction(id string) {
 	if s.maxEvents <= 0 {
 		return
 	}
-	if len(s.order) < s.maxEvents {
-		s.order = append(s.order, id)
+	if len(s.insertionOrder) < s.maxEvents {
+		s.insertionOrder = append(s.insertionOrder, id)
 		return
 	}
-	delete(s.data, s.order[s.next])
-	s.order[s.next] = id
-	s.next = (s.next + 1) % s.maxEvents
+	delete(s.byEvent, s.insertionOrder[s.oldest])
+	s.insertionOrder[s.oldest] = id
+	s.oldest = (s.oldest + 1) % s.maxEvents
 }
 
 func (s *Store) CreateDeliveries(ctx context.Context, items []service.NewEvent) ([]domain.Result, error) {
@@ -48,24 +50,24 @@ func (s *Store) CreateDeliveries(ctx context.Context, items []service.NewEvent) 
 	defer s.mu.Unlock()
 
 	results := make([]domain.Result, len(items))
-	for i, it := range items {
-		id := it.Event.ID
-		byChannel := s.data[id]
+	for i, item := range items {
+		id := item.Event.ID
+		byChannel := s.byEvent[id]
 		if byChannel == nil {
-			byChannel = make(map[domain.Channel]domain.Delivery, len(it.Channels))
-			s.data[id] = byChannel
-			s.track(id)
+			byChannel = make(map[domain.Channel]domain.Delivery, len(item.Channels))
+			s.byEvent[id] = byChannel
+			s.trackForEviction(id)
 		}
-		ds := make([]domain.Delivery, 0, len(it.Channels))
-		for _, ch := range it.Channels {
+		deliveries := make([]domain.Delivery, 0, len(item.Channels))
+		for _, ch := range item.Channels {
 			d, ok := byChannel[ch]
 			if !ok {
 				d = domain.Delivery{EventID: id, Channel: ch, Status: domain.StatusQueued}
 				byChannel[ch] = d
 			}
-			ds = append(ds, d)
+			deliveries = append(deliveries, d)
 		}
-		results[i] = domain.NewResult(id, ds)
+		results[i] = domain.NewResult(id, deliveries)
 	}
 	return results, nil
 }
@@ -77,16 +79,13 @@ func (s *Store) GetDeliveries(ctx context.Context, eventID string) ([]domain.Del
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	byChannel := s.data[eventID]
+	byChannel := s.byEvent[eventID]
 	if len(byChannel) == 0 {
 		return nil, fmt.Errorf("%w: event %s", domain.ErrNotFound, eventID)
 	}
-	ds := make([]domain.Delivery, 0, len(byChannel))
-	for _, d := range byChannel {
-		ds = append(ds, d)
-	}
-	domain.SortDeliveries(ds)
-	return ds, nil
+	deliveries := slices.Collect(maps.Values(byChannel))
+	domain.SortDeliveries(deliveries)
+	return deliveries, nil
 }
 
 func (s *Store) Ping(context.Context) error { return nil }

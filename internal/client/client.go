@@ -22,8 +22,11 @@ type Client interface {
 	Close() error
 }
 
+// DefaultCallTimeout bounds one call including all of its retries.
+const DefaultCallTimeout = 300 * time.Millisecond
+
 type Options struct {
-	CallTimeout time.Duration // default 300ms; covers all attempts of one call
+	CallTimeout time.Duration // default DefaultCallTimeout; covers all attempts of one call
 	Policy      retry.Policy
 	Budget      *retry.Budget // nil = unlimited retries (still capped by Policy)
 }
@@ -61,7 +64,7 @@ type caller struct {
 
 func newCaller(opts Options) caller {
 	if opts.CallTimeout <= 0 {
-		opts.CallTimeout = 300 * time.Millisecond
+		opts.CallTimeout = DefaultCallTimeout
 	}
 	return caller{opts: opts}
 }
@@ -71,9 +74,9 @@ func (c *caller) call(ctx context.Context, fn func(ctx context.Context) error) e
 	ctx, cancel := context.WithTimeout(ctx, c.opts.CallTimeout)
 	defer cancel()
 	c.calls.Add(1)
-	n, err := retry.Do(ctx, c.opts.Policy, c.opts.Budget, classify, fn)
-	c.attempts.Add(int64(n))
-	c.retries.Add(int64(n - 1))
+	attempts, err := retry.Do(ctx, c.opts.Policy, c.opts.Budget, classify, fn)
+	c.attempts.Add(int64(attempts))
+	c.retries.Add(int64(attempts - 1))
 	if errors.Is(err, retry.ErrBudgetExhausted) {
 		c.exhausted.Add(1)
 	}
@@ -96,9 +99,9 @@ func classify(err error) (bool, time.Duration) {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return false, 0
 	case errors.Is(err, domain.ErrUnavailable), errors.Is(err, domain.ErrOverloaded):
-		var re *RemoteError
-		if errors.As(err, &re) {
-			return true, re.RetryAfter
+		var remoteErr *RemoteError
+		if errors.As(err, &remoteErr) {
+			return true, remoteErr.RetryAfter
 		}
 		return true, 0
 	}

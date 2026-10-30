@@ -17,7 +17,7 @@ func (c counted) RowCount(*testing.T) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := 0
-	for _, byChannel := range c.data {
+	for _, byChannel := range c.byEvent {
 		n += len(byChannel)
 	}
 	return n

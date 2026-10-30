@@ -3,6 +3,7 @@ package faults
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"time"
@@ -31,7 +32,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("fault probabilities must be in [0,1], got before=%v after=%v", c.FailBefore, c.FailAfter)
 	}
 	if c.Latency < 0 || c.LatencyJitter < 0 {
-		return fmt.Errorf("fault latency must be >= 0")
+		return errors.New("fault latency must be >= 0")
 	}
 	return nil
 }
@@ -55,16 +56,16 @@ func (in *Injector) Before(ctx context.Context) error {
 	if in == nil {
 		return nil
 	}
-	if d := in.latency(); d > 0 {
-		t := time.NewTimer(d)
-		defer t.Stop()
+	if delay := in.latency(); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-t.C:
+		case <-timer.C:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	if hit(in.cfg.FailBefore) {
+	if happens(in.cfg.FailBefore) {
 		return ErrFailBefore
 	}
 	return nil
@@ -72,15 +73,16 @@ func (in *Injector) Before(ctx context.Context) error {
 
 // LoseResponse reports whether a successful, already committed response should be discarded.
 func (in *Injector) LoseResponse() bool {
-	return in != nil && hit(in.cfg.FailAfter)
+	return in != nil && happens(in.cfg.FailAfter)
 }
 
 func (in *Injector) latency() time.Duration {
-	d := in.cfg.Latency
+	delay := in.cfg.Latency
 	if in.cfg.LatencyJitter > 0 {
-		d += rand.N(in.cfg.LatencyJitter + 1)
+		delay += rand.N(in.cfg.LatencyJitter + 1)
 	}
-	return d
+	return delay
 }
 
-func hit(p float64) bool { return p > 0 && rand.Float64() < p }
+// happens returns true with the given probability.
+func happens(probability float64) bool { return probability > 0 && rand.Float64() < probability }

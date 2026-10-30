@@ -4,6 +4,7 @@ package apierr
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"google.golang.org/grpc/codes"
 
@@ -31,20 +32,20 @@ func (m Mapping) Message(err error) string {
 }
 
 var (
-	invalidArgument  = Mapping{GRPC: codes.InvalidArgument, HTTP: 400, Code: "INVALID_ARGUMENT"}
-	notFound         = Mapping{GRPC: codes.NotFound, HTTP: 404, Code: "NOT_FOUND"}
-	overloaded       = Mapping{GRPC: codes.ResourceExhausted, HTTP: 429, Code: "RESOURCE_EXHAUSTED", public: "server overloaded, retry later"}
-	unavailable      = Mapping{GRPC: codes.Unavailable, HTTP: 503, Code: "UNAVAILABLE", Log: true, public: "service temporarily unavailable"}
-	deadlineExceeded = Mapping{GRPC: codes.DeadlineExceeded, HTTP: 504, Code: "DEADLINE_EXCEEDED", public: "deadline exceeded"}
+	invalidArgument  = Mapping{GRPC: codes.InvalidArgument, HTTP: http.StatusBadRequest, Code: "INVALID_ARGUMENT"}
+	notFound         = Mapping{GRPC: codes.NotFound, HTTP: http.StatusNotFound, Code: "NOT_FOUND"}
+	overloaded       = Mapping{GRPC: codes.ResourceExhausted, HTTP: http.StatusTooManyRequests, Code: "RESOURCE_EXHAUSTED", public: "server overloaded, retry later"}
+	unavailable      = Mapping{GRPC: codes.Unavailable, HTTP: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Log: true, public: "service temporarily unavailable"}
+	deadlineExceeded = Mapping{GRPC: codes.DeadlineExceeded, HTTP: http.StatusGatewayTimeout, Code: "DEADLINE_EXCEEDED", public: "deadline exceeded"}
 	canceled         = Mapping{GRPC: codes.Canceled, HTTP: StatusClientClosedRequest, Code: "CANCELED", public: "request canceled"}
-	internal         = Mapping{GRPC: codes.Internal, HTTP: 500, Code: "INTERNAL", Log: true, public: "internal error"}
+	internal         = Mapping{GRPC: codes.Internal, HTTP: http.StatusInternalServerError, Code: "INTERNAL", Log: true, public: "internal error"}
 )
 
 // Context errors are checked first: the service wraps a store's ctx error in
 // ErrUnavailable, but the caller's deadline is the more accurate answer.
 var table = []struct {
-	target error
-	m      Mapping
+	target  error
+	mapping Mapping
 }{
 	{context.DeadlineExceeded, deadlineExceeded},
 	{context.Canceled, canceled},
@@ -60,7 +61,7 @@ var ErrInternal = errors.New("internal server error")
 // FromGRPC inverts the table for clients: it returns the sentinel a gRPC code stands for.
 func FromGRPC(c codes.Code) error {
 	for _, row := range table {
-		if row.m.GRPC == c {
+		if row.mapping.GRPC == c {
 			return row.target
 		}
 	}
@@ -70,17 +71,18 @@ func FromGRPC(c codes.Code) error {
 // FromHTTP inverts the table for clients: it returns the sentinel an HTTP error status stands for.
 func FromHTTP(status int) error {
 	for _, row := range table {
-		if row.m.HTTP == status {
+		if row.mapping.HTTP == status {
 			return row.target
 		}
 	}
 	return ErrInternal
 }
 
+// Of classifies err; anything unrecognised is INTERNAL.
 func Of(err error) Mapping {
 	for _, row := range table {
 		if errors.Is(err, row.target) {
-			return row.m
+			return row.mapping
 		}
 	}
 	return internal

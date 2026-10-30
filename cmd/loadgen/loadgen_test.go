@@ -94,10 +94,10 @@ func TestRecorderErrorsByCode(t *testing.T) {
 
 func TestAppendCSVWritesHeaderOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.csv")
-	res := result{cfg: config{label: "x", duration: time.Second}, rec: newRecorder(), finished: time.Now()}
-	res.rec.record(time.Millisecond, nil)
+	outcome := result{cfg: config{label: "x", duration: time.Second}, rec: newRecorder(), finished: time.Now()}
+	outcome.rec.record(time.Millisecond, nil)
 	for range 2 {
-		if err := appendCSV(path, csvHeader, res.row()); err != nil {
+		if err := appendCSV(path, csvHeader, outcome.row()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -155,7 +155,7 @@ func (c *countingClient) Stats() client.Stats { return client.Stats{Calls: int64
 
 func TestRoundRobinSpreadsEvenly(t *testing.T) {
 	a, b, c := &countingClient{}, &countingClient{}, &countingClient{}
-	rr := &roundRobin{cs: []client.Client{a, b, c}}
+	rr := &roundRobin{clients: []client.Client{a, b, c}}
 	for range 9 {
 		_, _ = rr.Publish(context.Background(), domain.Event{})
 	}

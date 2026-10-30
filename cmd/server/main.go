@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc"
 
 	"sis2_highload/internal/faults"
 	"sis2_highload/internal/grpcapi"
@@ -25,17 +26,28 @@ import (
 	"sis2_highload/internal/store/postgres"
 )
 
+const (
+	readHeaderTimeout = 2 * time.Second
+	readTimeout       = 5 * time.Second
+	writeTimeout      = 10 * time.Second
+	idleTimeout       = 120 * time.Second
+	maxHeaderBytes    = 1 << 20
+	shutdownTimeout   = 10 * time.Second
+	dbPingTimeout     = 5 * time.Second
+	maxListeners      = 4 // gRPC, HTTP/1.1, h2c, pprof
+)
+
 type config struct {
-	store      string
-	dbURL      string
-	dbMaxConns int
-	memMax     int
-	grpcAddr   string
-	httpAddr   string
-	h2cAddr    string
-	pprofAddr  string
-	logLevel   slog.Level
-	faults     faults.Config
+	store           string
+	dbURL           string
+	dbMaxConns      int
+	memoryMaxEvents int
+	grpcAddr        string
+	httpAddr        string
+	h2cAddr         string
+	pprofAddr       string
+	logLevel        slog.Level
+	faults          faults.Config
 }
 
 type store interface {
@@ -62,7 +74,7 @@ func parseConfig() (config, error) {
 	flag.StringVar(&cfg.store, "store", envOr("STORE", "memory"), "store backend: memory|postgres (env STORE)")
 	flag.StringVar(&cfg.dbURL, "db-url", os.Getenv("DATABASE_URL"), "Postgres DSN (env DATABASE_URL)")
 	flag.IntVar(&cfg.dbMaxConns, "db-max-conns", envInt("DB_MAX_CONNS", 20), "Postgres pool size (env DB_MAX_CONNS)")
-	flag.IntVar(&cfg.memMax, "memory-max-events", envInt("MEMORY_MAX_EVENTS", 0), "memory store: keep only the newest N events, 0 = unbounded (env MEMORY_MAX_EVENTS)")
+	flag.IntVar(&cfg.memoryMaxEvents, "memory-max-events", envInt("MEMORY_MAX_EVENTS", 0), "memory store: keep only the newest N events, 0 = unbounded (env MEMORY_MAX_EVENTS)")
 	flag.StringVar(&cfg.grpcAddr, "grpc-addr", envOr("GRPC_ADDR", ":50051"), "gRPC listen address (env GRPC_ADDR)")
 	flag.StringVar(&cfg.httpAddr, "http-addr", envOr("HTTP_ADDR", ":8080"), "REST HTTP/1.1 listen address (env HTTP_ADDR)")
 	flag.StringVar(&cfg.h2cAddr, "h2c-addr", os.Getenv("H2C_ADDR"), "REST over cleartext HTTP/2 listen address, empty disables (env H2C_ADDR)")
@@ -103,52 +115,14 @@ func run(cfg config, log *slog.Logger) error {
 	defer closeStore()
 	log.Info("store ready", "store", cfg.store)
 
-	inj := faults.New(cfg.faults)
-	if inj != nil {
-		log.Warn("fault injection enabled",
-			"fail_before", cfg.faults.FailBefore, "fail_after", cfg.faults.FailAfter,
-			"latency", cfg.faults.Latency.String(), "latency_jitter", cfg.faults.LatencyJitter.String())
-	}
-
+	injector := newInjector(cfg.faults, log)
 	svc := service.New(st)
-	grpcSrv, health := grpcapi.New(svc, log, inj)
-	handler := httpapi.New(svc, st, log, inj)
-
-	grpcLis, err := net.Listen("tcp", cfg.grpcAddr)
-	if err != nil {
-		return fmt.Errorf("grpc listen: %w", err)
-	}
-	errc := make(chan error, 3)
-	go func() { errc <- grpcSrv.Serve(grpcLis) }()
-	log.Info("listening", "proto", "grpc", "addr", grpcLis.Addr().String())
-
-	httpSrv := newHTTPServer(handler, nil)
-	if err := serveHTTP(httpSrv, cfg.httpAddr, errc); err != nil {
+	grpcSrv, health := grpcapi.New(svc, log, injector)
+	srvs := &servers{grpc: grpcSrv}
+	errc := make(chan error, maxListeners)
+	if err := srvs.start(cfg, httpapi.New(svc, st, log, injector), errc, log); err != nil {
 		return err
 	}
-	log.Info("listening", "proto", "http/1.1", "addr", httpSrv.Addr)
-
-	var h2cSrv *http.Server
-	if cfg.h2cAddr != "" {
-		var protocols http.Protocols
-		protocols.SetUnencryptedHTTP2(true)
-		h2cSrv = newHTTPServer(handler, &protocols)
-		if err := serveHTTP(h2cSrv, cfg.h2cAddr, errc); err != nil {
-			return err
-		}
-		log.Info("listening", "proto", "h2c", "addr", h2cSrv.Addr)
-	}
-
-	if cfg.pprofAddr != "" {
-		// No WriteTimeout: /debug/pprof/profile streams for the requested seconds.
-		pprofSrv := &http.Server{Handler: pprofMux(), ReadHeaderTimeout: 2 * time.Second}
-		if err := serveHTTP(pprofSrv, cfg.pprofAddr, errc); err != nil {
-			return err
-		}
-		defer pprofSrv.Close()
-		log.Info("listening", "proto", "pprof", "addr", pprofSrv.Addr)
-	}
-
 	grpcapi.SetServing(health, true)
 
 	select {
@@ -159,29 +133,88 @@ func run(cfg config, log *slog.Logger) error {
 	}
 
 	grpcapi.SetServing(health, false)
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	srvs.shutdown(log)
+	log.Info("stopped")
+	return err
+}
+
+func newInjector(cfg faults.Config, log *slog.Logger) *faults.Injector {
+	injector := faults.New(cfg)
+	if injector != nil {
+		log.Warn("fault injection enabled",
+			"fail_before", cfg.FailBefore, "fail_after", cfg.FailAfter,
+			"latency", cfg.Latency.String(), "latency_jitter", cfg.LatencyJitter.String())
+	}
+	return injector
+}
+
+type servers struct {
+	grpc  *grpc.Server
+	api   []*http.Server // REST listeners, drained on shutdown
+	pprof *http.Server   // closed immediately: a running profile would hold shutdown open
+}
+
+// start binds every listener before returning, so address errors fail startup.
+func (s *servers) start(cfg config, handler http.Handler, errc chan<- error, log *slog.Logger) error {
+	grpcLis, err := net.Listen("tcp", cfg.grpcAddr)
+	if err != nil {
+		return fmt.Errorf("grpc listen: %w", err)
+	}
+	go func() { errc <- s.grpc.Serve(grpcLis) }()
+	log.Info("listening", "proto", "grpc", "addr", grpcLis.Addr().String())
+
+	httpSrv := newHTTPServer(handler, nil)
+	if err := serveHTTP(httpSrv, cfg.httpAddr, errc); err != nil {
+		return err
+	}
+	s.api = append(s.api, httpSrv)
+	log.Info("listening", "proto", "http/1.1", "addr", httpSrv.Addr)
+
+	if cfg.h2cAddr != "" {
+		var protocols http.Protocols
+		protocols.SetUnencryptedHTTP2(true)
+		h2cSrv := newHTTPServer(handler, &protocols)
+		if err := serveHTTP(h2cSrv, cfg.h2cAddr, errc); err != nil {
+			return err
+		}
+		s.api = append(s.api, h2cSrv)
+		log.Info("listening", "proto", "h2c", "addr", h2cSrv.Addr)
+	}
+
+	if cfg.pprofAddr != "" {
+		// No WriteTimeout: /debug/pprof/profile streams for the requested seconds.
+		s.pprof = &http.Server{Handler: pprofMux(), ReadHeaderTimeout: readHeaderTimeout}
+		if err := serveHTTP(s.pprof, cfg.pprofAddr, errc); err != nil {
+			return err
+		}
+		log.Info("listening", "proto", "pprof", "addr", s.pprof.Addr)
+	}
+	return nil
+}
+
+// shutdown drains gRPC and REST in parallel, forcing gRPC closed after shutdownTimeout.
+func (s *servers) shutdown(log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	grpcDone := make(chan struct{})
 	go func() {
-		grpcSrv.GracefulStop()
+		s.grpc.GracefulStop()
 		close(grpcDone)
 	}()
-	for _, srv := range []*http.Server{httpSrv, h2cSrv} {
-		if srv == nil {
-			continue
-		}
-		if serr := srv.Shutdown(shutdownCtx); serr != nil {
-			log.Error("http shutdown", "addr", srv.Addr, "err", serr)
+	for _, srv := range s.api {
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Error("http shutdown", "addr", srv.Addr, "err", err)
 		}
 	}
 	select {
 	case <-grpcDone:
-	case <-shutdownCtx.Done():
-		grpcSrv.Stop()
+	case <-ctx.Done():
+		s.grpc.Stop()
 	}
-	log.Info("stopped")
-	return err
+	if s.pprof != nil {
+		_ = s.pprof.Close()
+	}
 }
 
 func pprofMux() *http.ServeMux {
@@ -196,7 +229,7 @@ func pprofMux() *http.ServeMux {
 
 func openStore(ctx context.Context, cfg config) (store, func(), error) {
 	if cfg.store == "memory" {
-		return memory.NewBounded(cfg.memMax), func() {}, nil
+		return memory.NewBounded(cfg.memoryMaxEvents), func() {}, nil
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.dbURL)
 	if err != nil {
@@ -207,7 +240,7 @@ func openStore(ctx context.Context, cfg config) (store, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect postgres: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, dbPingTimeout)
 	defer cancel()
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
@@ -220,11 +253,11 @@ func newHTTPServer(h http.Handler, protocols *http.Protocols) *http.Server {
 	return &http.Server{
 		Handler:           h,
 		Protocols:         protocols,
-		ReadHeaderTimeout: 2 * time.Second,
-		ReadTimeout:       5 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 }
 

@@ -30,12 +30,12 @@ func TestOf(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := Of(tt.err)
-			if m.GRPC != tt.grpc || m.HTTP != tt.http {
-				t.Fatalf("Of(%v) = %v/%d, want %v/%d", tt.err, m.GRPC, m.HTTP, tt.grpc, tt.http)
+			mapping := Of(tt.err)
+			if mapping.GRPC != tt.grpc || mapping.HTTP != tt.http {
+				t.Fatalf("Of(%v) = %v/%d, want %v/%d", tt.err, mapping.GRPC, mapping.HTTP, tt.grpc, tt.http)
 			}
-			if exposed := m.Message(tt.err) == tt.err.Error(); exposed != tt.expose {
-				t.Fatalf("message %q exposed=%v, want %v", m.Message(tt.err), exposed, tt.expose)
+			if exposed := mapping.Message(tt.err) == tt.err.Error(); exposed != tt.expose {
+				t.Fatalf("message %q exposed=%v, want %v", mapping.Message(tt.err), exposed, tt.expose)
 			}
 		})
 	}
@@ -43,13 +43,13 @@ func TestOf(t *testing.T) {
 
 func TestInverse(t *testing.T) {
 	for _, row := range table {
-		if got := FromGRPC(row.m.GRPC); got != row.target {
-			t.Errorf("FromGRPC(%v) = %v, want %v", row.m.GRPC, got, row.target)
+		if got := FromGRPC(row.mapping.GRPC); got != row.target {
+			t.Errorf("FromGRPC(%v) = %v, want %v", row.mapping.GRPC, got, row.target)
 		}
-		if got := FromHTTP(row.m.HTTP); got != row.target {
-			t.Errorf("FromHTTP(%d) = %v, want %v", row.m.HTTP, got, row.target)
+		if got := FromHTTP(row.mapping.HTTP); got != row.target {
+			t.Errorf("FromHTTP(%d) = %v, want %v", row.mapping.HTTP, got, row.target)
 		}
-		if back := Of(row.target); back != row.m {
+		if back := Of(row.target); back != row.mapping {
 			t.Errorf("Of(FromX(%v)) does not round-trip", row.target)
 		}
 	}

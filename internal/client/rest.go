@@ -18,6 +18,15 @@ import (
 	"sis2_highload/internal/httpapi"
 )
 
+const (
+	dialTimeout      = 5 * time.Second
+	tcpKeepAlive     = 30 * time.Second
+	maxIdleConns     = 1024
+	idleConnTimeout  = 90 * time.Second // below the server's 120s so we never reuse a conn it is closing
+	retryAfterHeader = "Retry-After"
+	contentTypeJSON  = "application/json"
+)
+
 type restClient struct {
 	caller
 	base      string
@@ -32,23 +41,24 @@ func NewREST(baseURL string, opts Options) Client { return newREST(baseURL, opts
 func NewRESTH2C(baseURL string, opts Options) Client { return newREST(baseURL, opts, true) }
 
 func newREST(baseURL string, opts Options, h2c bool) *restClient {
-	t := &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		MaxIdleConns:        1024,
-		MaxIdleConnsPerHost: 1024,
-		IdleConnTimeout:     90 * time.Second, // below the server's 120s so we never reuse a conn it is closing
+	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: tcpKeepAlive}
+	transport := &http.Transport{
+		DialContext:         dialer.DialContext,
+		MaxIdleConns:        maxIdleConns,
+		MaxIdleConnsPerHost: maxIdleConns,
+		IdleConnTimeout:     idleConnTimeout,
 		ForceAttemptHTTP2:   false,
 	}
 	if h2c {
-		var p http.Protocols
-		p.SetUnencryptedHTTP2(true)
-		t.Protocols = &p
+		var protocols http.Protocols
+		protocols.SetUnencryptedHTTP2(true)
+		transport.Protocols = &protocols
 	}
 	return &restClient{
 		caller:    newCaller(opts),
 		base:      strings.TrimRight(baseURL, "/"),
-		http:      &http.Client{Transport: t},
-		transport: t,
+		http:      &http.Client{Transport: transport},
+		transport: transport,
 	}
 }
 
@@ -59,7 +69,7 @@ func (c *restClient) Publish(ctx context.Context, e domain.Event) (domain.Result
 	}
 	var out httpapi.Result
 	err = c.call(ctx, func(ctx context.Context) error {
-		return c.do(ctx, http.MethodPost, "/v1/events", body, &out)
+		return c.doAttempt(ctx, http.MethodPost, "/v1/events", body, &out)
 	})
 	if err != nil {
 		return domain.Result{}, err
@@ -68,32 +78,24 @@ func (c *restClient) Publish(ctx context.Context, e domain.Event) (domain.Result
 }
 
 func (c *restClient) PublishBatch(ctx context.Context, es []domain.Event) ([]domain.Result, error) {
-	req := httpapi.BatchRequest{Events: make([]httpapi.Event, len(es))}
-	for i, e := range es {
-		req.Events[i] = httpapi.EventFromDomain(e)
-	}
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(httpapi.BatchRequestFromDomain(es))
 	if err != nil {
 		return nil, fmt.Errorf("encode batch: %w", err)
 	}
 	var out httpapi.BatchResponse
 	err = c.call(ctx, func(ctx context.Context) error {
-		return c.do(ctx, http.MethodPost, "/v1/events/batch", body, &out)
+		return c.doAttempt(ctx, http.MethodPost, "/v1/events/batch", body, &out)
 	})
 	if err != nil {
 		return nil, err
 	}
-	res := make([]domain.Result, len(out.Results))
-	for i, r := range out.Results {
-		res[i] = r.ToDomain()
-	}
-	return res, nil
+	return out.ToDomain(), nil
 }
 
 func (c *restClient) GetStatus(ctx context.Context, eventID string) (domain.Result, error) {
 	var out httpapi.Result
 	err := c.call(ctx, func(ctx context.Context) error {
-		return c.do(ctx, http.MethodGet, "/v1/events/"+url.PathEscape(eventID), nil, &out)
+		return c.doAttempt(ctx, http.MethodGet, "/v1/events/"+url.PathEscape(eventID), nil, &out)
 	})
 	if err != nil {
 		return domain.Result{}, err
@@ -106,18 +108,18 @@ func (c *restClient) Close() error {
 	return nil
 }
 
-// do performs one attempt. body is reused as-is on every attempt.
-func (c *restClient) do(ctx context.Context, method, path string, body []byte, out any) error {
-	var r io.Reader
+// doAttempt performs one attempt. body is reused as-is on every attempt.
+func (c *restClient) doAttempt(ctx context.Context, method, path string, body []byte, out any) error {
+	var bodyReader io.Reader
 	if body != nil {
-		r = bytes.NewReader(body)
+		bodyReader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, r)
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bodyReader)
 	if err != nil {
 		return err
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentTypeJSON)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		ms := max(1, time.Until(deadline).Milliseconds())
@@ -133,7 +135,7 @@ func (c *restClient) do(ctx context.Context, method, path string, body []byte, o
 		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= http.StatusMultipleChoices { // anything but 2xx
 		return httpError(resp)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -153,13 +155,13 @@ func transportError(ctx context.Context, err error) error {
 }
 
 func httpError(resp *http.Response) error {
-	re := &RemoteError{Kind: apierr.FromHTTP(resp.StatusCode)}
+	remoteErr := &RemoteError{Kind: apierr.FromHTTP(resp.StatusCode)}
 	var body httpapi.ErrorResponse
 	if json.NewDecoder(resp.Body).Decode(&body) == nil {
-		re.Message = body.Error.Message
+		remoteErr.Message = body.Error.Message
 	}
-	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
-		re.RetryAfter = time.Duration(s) * time.Second
+	if seconds, err := strconv.Atoi(resp.Header.Get(retryAfterHeader)); err == nil && seconds > 0 {
+		remoteErr.RetryAfter = time.Duration(seconds) * time.Second
 	}
-	return re
+	return remoteErr
 }

@@ -53,8 +53,8 @@ func NewResult(eventID string, deliveries []Delivery) Result {
 	return Result{EventID: eventID, Deliveries: deliveries}
 }
 
-func SortDeliveries(ds []Delivery) {
-	slices.SortFunc(ds, func(a, b Delivery) int {
+func SortDeliveries(deliveries []Delivery) {
+	slices.SortFunc(deliveries, func(a, b Delivery) int {
 		return strings.Compare(string(a.Channel), string(b.Channel))
 	})
 }

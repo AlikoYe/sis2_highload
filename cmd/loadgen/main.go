@@ -36,6 +36,8 @@ const (
 	maxPrepared      = 5_000_000 // open mode prepares every request up front
 )
 
+var defaultTargets = map[string]string{"grpc": "localhost:50051", "rest": "localhost:8080", "h2c": "localhost:8081"}
+
 func main() {
 	cfg, err := parseFlags()
 	if err != nil {
@@ -49,63 +51,63 @@ func main() {
 }
 
 func parseFlags() (config, error) {
-	var c config
-	flag.StringVar(&c.protocol, "protocol", "grpc", "grpc|rest|h2c")
-	flag.StringVar(&c.target, "target", "", "server host:port (default per protocol: :50051, :8080, :8081)")
-	flag.StringVar(&c.op, "op", "publish", "publish|batch|status")
-	flag.StringVar(&c.payload, "payload", "small", "small|medium|large (batch always sends 100 small events)")
-	flag.StringVar(&c.mode, "mode", "closed", "closed|open")
-	flag.IntVar(&c.concurrency, "concurrency", 16, "closed mode: number of workers")
-	flag.IntVar(&c.conns, "conns", 1, "grpc/h2c: number of connections, requests round-robin across them; ignored for rest (HTTP/1.1 already uses one connection per in-flight request)")
-	flag.Float64Var(&c.rate, "rate", 1000, "open mode: requests per second")
-	flag.IntVar(&c.maxInflight, "max-inflight", 1024, "open mode: max outstanding requests; extra ones are dropped")
-	flag.DurationVar(&c.duration, "duration", 30*time.Second, "measured duration")
-	flag.DurationVar(&c.warmup, "warmup", 5*time.Second, "unrecorded warm-up before measuring")
-	flag.DurationVar(&c.callTimeout, "call-timeout", 300*time.Millisecond, "per-call deadline including retries")
-	flag.StringVar(&c.label, "label", "", "run label written to the CSV")
-	flag.StringVar(&c.store, "store", "memory", "server store, only recorded in the output")
-	flag.StringVar(&c.out, "out", "", "CSV file to append the result row to")
-	flag.IntVar(&c.serverPID, "server-pid", 0, "if set, measure this process's CPU time over the measured window")
-	flag.StringVar(&c.serverCPUOut, "server-cpu-out", "", "CSV file for label,server_cpu_ms,duration_s (needs -server-pid)")
-	flag.Uint64Var(&c.seed, "seed", 1, "seed for picking status ids")
+	var cfg config
+	flag.StringVar(&cfg.protocol, "protocol", "grpc", "grpc|rest|h2c")
+	flag.StringVar(&cfg.target, "target", "", "server host:port (default per protocol: :50051, :8080, :8081)")
+	flag.StringVar(&cfg.op, "op", "publish", "publish|batch|status")
+	flag.StringVar(&cfg.payload, "payload", "small", "small|medium|large (batch always sends 100 small events)")
+	flag.StringVar(&cfg.mode, "mode", "closed", "closed|open")
+	flag.IntVar(&cfg.concurrency, "concurrency", 16, "closed mode: number of workers")
+	flag.IntVar(&cfg.conns, "conns", 1, "grpc/h2c: number of connections, requests round-robin across them; ignored for rest (HTTP/1.1 already uses one connection per in-flight request)")
+	flag.Float64Var(&cfg.rate, "rate", 1000, "open mode: requests per second")
+	flag.IntVar(&cfg.maxInflight, "max-inflight", 1024, "open mode: max outstanding requests; extra ones are dropped")
+	flag.DurationVar(&cfg.duration, "duration", 30*time.Second, "measured duration")
+	flag.DurationVar(&cfg.warmup, "warmup", 5*time.Second, "unrecorded warm-up before measuring")
+	flag.DurationVar(&cfg.callTimeout, "call-timeout", 300*time.Millisecond, "per-call deadline including retries")
+	flag.StringVar(&cfg.label, "label", "", "run label written to the CSV")
+	flag.StringVar(&cfg.store, "store", "memory", "server store, only recorded in the output")
+	flag.StringVar(&cfg.out, "out", "", "CSV file to append the result row to")
+	flag.IntVar(&cfg.serverPID, "server-pid", 0, "if set, measure this process's CPU time over the measured window")
+	flag.StringVar(&cfg.serverCPUOut, "server-cpu-out", "", "CSV file for label,server_cpu_ms,duration_s (needs -server-pid)")
+	flag.Uint64Var(&cfg.seed, "seed", 1, "seed for picking status ids")
 	flag.Parse()
 
-	if c.target == "" {
-		c.target = map[string]string{"grpc": "localhost:50051", "rest": "localhost:8080", "h2c": "localhost:8081"}[c.protocol]
+	if cfg.target == "" {
+		cfg.target = defaultTargets[cfg.protocol]
 	}
 	switch {
-	case c.target == "":
-		return c, fmt.Errorf("unknown -protocol %q", c.protocol)
-	case c.op != "publish" && c.op != "batch" && c.op != "status":
-		return c, fmt.Errorf("unknown -op %q", c.op)
-	case c.mode != "closed" && c.mode != "open":
-		return c, fmt.Errorf("unknown -mode %q", c.mode)
-	case c.mode == "closed" && c.concurrency <= 0:
-		return c, errors.New("-concurrency must be > 0")
-	case c.mode == "open" && (c.rate <= 0 || c.maxInflight <= 0):
-		return c, errors.New("-rate and -max-inflight must be > 0")
-	case c.conns <= 0:
-		return c, errors.New("-conns must be > 0")
-	case c.duration <= 0 || c.warmup < 0:
-		return c, errors.New("-duration must be > 0 and -warmup >= 0")
+	case cfg.target == "":
+		return cfg, fmt.Errorf("unknown -protocol %q", cfg.protocol)
+	case cfg.op != "publish" && cfg.op != "batch" && cfg.op != "status":
+		return cfg, fmt.Errorf("unknown -op %q", cfg.op)
+	case cfg.mode != "closed" && cfg.mode != "open":
+		return cfg, fmt.Errorf("unknown -mode %q", cfg.mode)
+	case cfg.mode == "closed" && cfg.concurrency <= 0:
+		return cfg, errors.New("-concurrency must be > 0")
+	case cfg.mode == "open" && (cfg.rate <= 0 || cfg.maxInflight <= 0):
+		return cfg, errors.New("-rate and -max-inflight must be > 0")
+	case cfg.conns <= 0:
+		return cfg, errors.New("-conns must be > 0")
+	case cfg.duration <= 0 || cfg.warmup < 0:
+		return cfg, errors.New("-duration must be > 0 and -warmup >= 0")
 	}
-	if c.op == "batch" {
-		c.payload = string(workload.Batch)
-	} else if _, err := workload.ParseKind(c.payload); err != nil || c.payload == string(workload.Batch) {
-		return c, fmt.Errorf("unknown -payload %q", c.payload)
+	if cfg.op == "batch" {
+		cfg.payload = string(workload.Batch)
+	} else if _, err := workload.ParseKind(cfg.payload); err != nil || cfg.payload == string(workload.Batch) {
+		return cfg, fmt.Errorf("unknown -payload %q", cfg.payload)
 	}
-	if c.protocol == "rest" {
-		c.conns = 0 // recorded as 0: HTTP/1.1 opens one connection per in-flight request
+	if cfg.protocol == "rest" {
+		cfg.conns = 0 // recorded as 0: HTTP/1.1 opens one connection per in-flight request
 	}
-	if c.mode == "open" {
-		c.concurrency = 0
+	if cfg.mode == "open" {
+		cfg.concurrency = 0
 	} else {
-		c.rate = 0
+		cfg.rate = 0
 	}
-	if c.label == "" {
-		c.label = fmt.Sprintf("%s-%s-%s", c.protocol, c.op, c.payload)
+	if cfg.label == "" {
+		cfg.label = fmt.Sprintf("%s-%s-%s", cfg.protocol, cfg.op, cfg.payload)
 	}
-	return c, nil
+	return cfg, nil
 }
 
 // newClient builds one client per connection (sharing one retry budget) and
@@ -118,24 +120,24 @@ func newClient(cfg config) (client.Client, error) {
 	rr := &roundRobin{}
 	for range cfg.conns {
 		if cfg.protocol == "h2c" {
-			rr.cs = append(rr.cs, client.NewRESTH2C("http://"+cfg.target, opts))
+			rr.clients = append(rr.clients, client.NewRESTH2C("http://"+cfg.target, opts))
 			continue
 		}
-		c, err := client.NewGRPC(cfg.target, opts)
+		grpcClient, err := client.NewGRPC(cfg.target, opts)
 		if err != nil {
 			_ = rr.Close()
 			return nil, err
 		}
-		rr.cs = append(rr.cs, c)
+		rr.clients = append(rr.clients, grpcClient)
 	}
-	if len(rr.cs) == 1 {
-		return rr.cs[0], nil
+	if len(rr.clients) == 1 {
+		return rr.clients[0], nil
 	}
 	return rr, nil
 }
 
-// builder returns a function that prepares one request; rng is only used by the status op.
-func builder(ctx context.Context, cfg config, c client.Client) (func(rng *rand.Rand) request, error) {
+// requestBuilder returns a function that prepares one request; rng is only used by the status op.
+func requestBuilder(ctx context.Context, cfg config, c client.Client) (func(rng *rand.Rand) request, error) {
 	switch cfg.op {
 	case "batch":
 		return func(*rand.Rand) request {
@@ -143,11 +145,11 @@ func builder(ctx context.Context, cfg config, c client.Client) (func(rng *rand.R
 			for i := range ids {
 				ids[i] = client.NewEventID()
 			}
-			es := workload.BatchEvents(ids)
-			return func(ctx context.Context) error { _, err := c.PublishBatch(ctx, es); return err }
+			events := workload.BatchEvents(ids)
+			return func(ctx context.Context) error { _, err := c.PublishBatch(ctx, events); return err }
 		}, nil
 	case "status":
-		ids, err := seed(ctx, c, workload.Kind(cfg.payload))
+		ids, err := seedStatusEvents(ctx, c, workload.Kind(cfg.payload))
 		if err != nil {
 			return nil, err
 		}
@@ -158,13 +160,13 @@ func builder(ctx context.Context, cfg config, c client.Client) (func(rng *rand.R
 	default:
 		kind := workload.Kind(cfg.payload)
 		return func(*rand.Rand) request {
-			e := workload.Event(kind, client.NewEventID())
-			return func(ctx context.Context) error { _, err := c.Publish(ctx, e); return err }
+			event := workload.Event(kind, client.NewEventID())
+			return func(ctx context.Context) error { _, err := c.Publish(ctx, event); return err }
 		}, nil
 	}
 }
 
-func seed(ctx context.Context, c client.Client, kind workload.Kind) ([]string, error) {
+func seedStatusEvents(ctx context.Context, c client.Client, kind workload.Kind) ([]string, error) {
 	ids := make([]string, statusSeedEvents)
 	for i := range ids {
 		ids[i] = client.NewEventID()
@@ -182,22 +184,22 @@ type snapshot struct {
 }
 
 func takeSnapshot(cfg config, c client.Client) (snapshot, error) {
-	s := snapshot{cpu: selfCPU(), stats: c.Stats()}
+	snap := snapshot{cpu: selfCPU(), stats: c.Stats()}
 	if cfg.serverPID > 0 {
 		var err error
-		if s.serverCPU, err = processCPU(cfg.serverPID); err != nil {
-			return s, err
+		if snap.serverCPU, err = processCPU(cfg.serverPID); err != nil {
+			return snap, err
 		}
 	}
-	return s, nil
+	return snap, nil
 }
 
 func selfCPU() time.Duration {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+	var usage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
 		return 0
 	}
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
 }
 
 func run(cfg config) error {
@@ -208,49 +210,25 @@ func run(cfg config) error {
 	}
 	defer c.Close()
 
-	build, err := builder(ctx, cfg, c)
+	build, err := requestBuilder(ctx, cfg, c)
 	if err != nil {
 		return err
 	}
-
-	// Open mode prepares every request before the clock starts; closed mode
-	// prepares each one right before taking its start timestamp.
 	var prepared []request
 	if cfg.mode == "open" {
-		n := int(cfg.rate*(cfg.warmup+cfg.duration).Seconds()) + 1
-		if n > maxPrepared {
-			return fmt.Errorf("open mode would prepare %d requests (max %d): lower -rate or -duration", n, maxPrepared)
-		}
-		rng := rand.New(rand.NewPCG(cfg.seed, 0))
-		prepared = make([]request, n)
-		for i := range prepared {
-			prepared[i] = build(rng)
+		if prepared, err = prepareAll(cfg, build); err != nil {
+			return err
 		}
 	}
 
 	start := time.Now()
-	w := window{start: start, measureStart: start.Add(cfg.warmup), end: start.Add(cfg.warmup + cfg.duration)}
-
-	type snaps struct {
-		before, after snapshot
-		err           error
-	}
-	snapc := make(chan snaps, 1)
-	go func() {
-		var s snaps
-		time.Sleep(time.Until(w.measureStart))
-		s.before, s.err = takeSnapshot(cfg, c)
-		time.Sleep(time.Until(w.end))
-		if s.err == nil {
-			s.after, s.err = takeSnapshot(cfg, c)
-		}
-		snapc <- s
-	}()
+	timeline := window{start: start, measureStart: start.Add(cfg.warmup), end: start.Add(cfg.warmup + cfg.duration)}
+	snapshots := snapshotWindow(cfg, c, timeline)
 
 	var rec *recorder
 	var dropped int64
 	if cfg.mode == "open" {
-		rec, dropped = openLoop{rate: cfg.rate, maxInflight: cfg.maxInflight}.run(w, func(i int) request {
+		rec, dropped = openLoop{rate: cfg.rate, maxInflight: cfg.maxInflight}.run(timeline, func(i int) request {
 			return prepared[min(i, len(prepared)-1)]
 		})
 	} else {
@@ -258,33 +236,76 @@ func run(cfg config) error {
 		for i := range rngs {
 			rngs[i] = rand.New(rand.NewPCG(cfg.seed, uint64(i)))
 		}
-		rec = runClosed(cfg.concurrency, w, func(worker int) request { return build(rngs[worker]) })
+		rec = runClosed(cfg.concurrency, timeline, func(worker int) request { return build(rngs[worker]) })
 	}
-	s := <-snapc
-	if s.err != nil {
-		return s.err
+	snaps := <-snapshots
+	if snaps.err != nil {
+		return snaps.err
 	}
 
-	res := result{
+	outcome := result{
 		cfg:       cfg,
 		rec:       rec,
 		dropped:   dropped,
-		attempts:  s.after.stats.Attempts - s.before.stats.Attempts,
-		retries:   s.after.stats.Retries - s.before.stats.Retries,
-		clientCPU: s.after.cpu - s.before.cpu,
-		serverCPU: s.after.serverCPU - s.before.serverCPU,
+		attempts:  snaps.after.stats.Attempts - snaps.before.stats.Attempts,
+		retries:   snaps.after.stats.Retries - snaps.before.stats.Retries,
+		clientCPU: snaps.after.cpu - snaps.before.cpu,
+		serverCPU: snaps.after.serverCPU - snaps.before.serverCPU,
 		finished:  time.Now(),
 	}
-	res.summary(os.Stdout)
+	outcome.summary(os.Stdout)
+	return writeOutputs(cfg, outcome)
+}
 
+// prepareAll builds every open-mode request before the clock starts; closed mode
+// instead prepares each one right before taking its start timestamp.
+func prepareAll(cfg config, build func(*rand.Rand) request) ([]request, error) {
+	count := int(cfg.rate*(cfg.warmup+cfg.duration).Seconds()) + 1
+	if count > maxPrepared {
+		return nil, fmt.Errorf("open mode would prepare %d requests (max %d): lower -rate or -duration", count, maxPrepared)
+	}
+	rng := rand.New(rand.NewPCG(cfg.seed, 0))
+	prepared := make([]request, count)
+	for i := range prepared {
+		prepared[i] = build(rng)
+	}
+	return prepared, nil
+}
+
+type windowSnapshots struct {
+	before, after snapshot
+	err           error
+}
+
+// snapshotWindow takes CPU and client-stats snapshots at the start and end of the measured window.
+func snapshotWindow(cfg config, c client.Client, timeline window) <-chan windowSnapshots {
+	done := make(chan windowSnapshots, 1)
+	go func() {
+		var snaps windowSnapshots
+		time.Sleep(time.Until(timeline.measureStart))
+		snaps.before, snaps.err = takeSnapshot(cfg, c)
+		time.Sleep(time.Until(timeline.end))
+		if snaps.err == nil {
+			snaps.after, snaps.err = takeSnapshot(cfg, c)
+		}
+		done <- snaps
+	}()
+	return done
+}
+
+func writeOutputs(cfg config, outcome result) error {
 	if cfg.out != "" {
-		if err := appendCSV(cfg.out, csvHeader, res.row()); err != nil {
+		if err := appendCSV(cfg.out, csvHeader, outcome.row()); err != nil {
 			return fmt.Errorf("write %s: %w", cfg.out, err)
 		}
 	}
 	if cfg.serverCPUOut != "" && cfg.serverPID > 0 {
-		row := []string{cfg.label, strconv.FormatInt(res.serverCPU.Milliseconds(), 10), strconv.FormatFloat(cfg.duration.Seconds(), 'f', 1, 64)}
-		if err := appendCSV(cfg.serverCPUOut, []string{"label", "server_cpu_ms", "duration_s"}, row); err != nil {
+		row := []string{
+			cfg.label,
+			strconv.FormatInt(outcome.serverCPU.Milliseconds(), 10),
+			strconv.FormatFloat(cfg.duration.Seconds(), 'f', 1, 64),
+		}
+		if err := appendCSV(cfg.serverCPUOut, serverCPUHeader, row); err != nil {
 			return fmt.Errorf("write %s: %w", cfg.serverCPUOut, err)
 		}
 	}

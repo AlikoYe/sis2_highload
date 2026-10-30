@@ -25,25 +25,44 @@ func main() {
 }
 
 func summarize(inputs []string, out string) error {
+	runs, files, err := loadRuns(inputs)
+	if err != nil {
+		return err
+	}
+	groups := groupRuns(runs)
+	if err := os.WriteFile(out, []byte(render(groups, files)), 0o644); err != nil {
+		return err
+	}
+	csvOut := strings.TrimSuffix(out, filepath.Ext(out)) + ".csv"
+	if err := writeSummaryCSVFile(csvOut, groups); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s and %s (%d runs, %d groups, %d files)\n", out, csvOut, len(runs), len(groups), len(files))
+	return nil
+}
+
+// loadRuns reads every bench CSV (default results/bench_*.csv) and returns the
+// runs plus the file names used.
+func loadRuns(inputs []string) ([]run, []string, error) {
 	if len(inputs) == 0 {
 		matches, err := filepath.Glob("results/bench_*.csv")
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		inputs = matches
 	}
-	var files []string
 	var runs []run
+	var files []string
 	for _, path := range inputs {
 		if strings.HasSuffix(path, "_server_cpu.csv") {
 			continue
 		}
-		rs, err := load(path)
+		fileRuns, err := load(path)
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			return nil, nil, fmt.Errorf("%s: %w", path, err)
 		}
 		files = append(files, filepath.Base(path))
-		for _, r := range rs {
+		for _, r := range fileRuns {
 			// Profiled runs carry pprof overhead; they are for flame graphs, not numbers.
 			if !strings.HasPrefix(r.label, "prof-") {
 				runs = append(runs, r)
@@ -51,14 +70,13 @@ func summarize(inputs []string, out string) error {
 		}
 	}
 	if len(runs) == 0 {
-		return errors.New("no runs found")
+		return nil, nil, errors.New("no runs found")
 	}
-	groups := groupRuns(runs)
-	if err := os.WriteFile(out, []byte(render(groups, files)), 0o644); err != nil {
-		return err
-	}
-	csvOut := strings.TrimSuffix(out, filepath.Ext(out)) + ".csv"
-	f, err := os.Create(csvOut)
+	return runs, files, nil
+}
+
+func writeSummaryCSVFile(path string, groups []group) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
@@ -66,11 +84,7 @@ func summarize(inputs []string, out string) error {
 		f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	fmt.Printf("wrote %s and %s (%d runs, %d groups, %d files)\n", out, csvOut, len(runs), len(groups), len(files))
-	return nil
+	return f.Close()
 }
 
 func load(path string) ([]run, error) {

@@ -22,6 +22,11 @@ import (
 const (
 	DefaultTimeout = 2 * time.Second
 	MaxTimeout     = 5 * time.Second
+
+	keepaliveMaxIdle      = 5 * time.Minute
+	keepalivePingInterval = time.Minute
+	keepalivePingTimeout  = 20 * time.Second
+	keepaliveMinClientGap = 10 * time.Second // reject clients pinging more often than this
 )
 
 type handler struct {
@@ -31,87 +36,83 @@ type handler struct {
 }
 
 // New builds a gRPC server with the notification and health services registered.
-// Health starts NOT_SERVING; call SetServing once listeners are up. inj may be nil.
-func New(svc *service.Service, log *slog.Logger, inj *faults.Injector) (*grpc.Server, *health.Server) {
+// Health starts NOT_SERVING; call SetServing once listeners are up. injector may be nil.
+func New(svc *service.Service, log *slog.Logger, injector *faults.Injector) (*grpc.Server, *health.Server) {
 	srv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			recoveryInterceptor(log),
 			deadlineInterceptor(DefaultTimeout, MaxTimeout),
-			faultInterceptor(inj),
+			faultInterceptor(injector),
 		),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle: 5 * time.Minute,
-			Time:              time.Minute,
-			Timeout:           20 * time.Second,
+			MaxConnectionIdle: keepaliveMaxIdle,
+			Time:              keepalivePingInterval,
+			Timeout:           keepalivePingTimeout,
 		}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             10 * time.Second,
+			MinTime:             keepaliveMinClientGap,
 			PermitWithoutStream: true,
 		}),
 	)
 	pb.RegisterNotificationServiceServer(srv, &handler{svc: svc, log: log})
 
-	hs := health.NewServer()
-	SetServing(hs, false)
-	healthpb.RegisterHealthServer(srv, hs)
-	return srv, hs
+	healthSrv := health.NewServer()
+	SetServing(healthSrv, false)
+	healthpb.RegisterHealthServer(srv, healthSrv)
+	return srv, healthSrv
 }
 
-func SetServing(hs *health.Server, serving bool) {
-	st := healthpb.HealthCheckResponse_NOT_SERVING
+func SetServing(healthSrv *health.Server, serving bool) {
+	servingStatus := healthpb.HealthCheckResponse_NOT_SERVING
 	if serving {
-		st = healthpb.HealthCheckResponse_SERVING
+		servingStatus = healthpb.HealthCheckResponse_SERVING
 	}
-	hs.SetServingStatus("", st)
-	hs.SetServingStatus(pb.NotificationService_ServiceDesc.ServiceName, st)
+	healthSrv.SetServingStatus("", servingStatus)
+	healthSrv.SetServingStatus(pb.NotificationService_ServiceDesc.ServiceName, servingStatus)
 }
 
 func (h *handler) Publish(ctx context.Context, req *pb.PublishRequest) (*pb.PublishResponse, error) {
 	if req.GetEvent() == nil {
 		return nil, statusError(ctx, h.log, fmt.Errorf("%w: event is required", domain.ErrInvalidArgument))
 	}
-	res, err := h.svc.Publish(ctx, EventFromProto(req.GetEvent()))
+	result, err := h.svc.Publish(ctx, EventFromProto(req.GetEvent()))
 	if err != nil {
 		return nil, statusError(ctx, h.log, err)
 	}
-	return PublishResponse(res), nil
+	return PublishResponse(result), nil
 }
 
 func (h *handler) PublishBatch(ctx context.Context, req *pb.PublishBatchRequest) (*pb.PublishBatchResponse, error) {
 	events := make([]domain.Event, len(req.GetEvents()))
-	for i, e := range req.GetEvents() {
-		if e == nil {
+	for i, event := range req.GetEvents() {
+		if event == nil {
 			return nil, statusError(ctx, h.log, fmt.Errorf("events[%d]: %w: event is required", i, domain.ErrInvalidArgument))
 		}
-		events[i] = EventFromProto(e)
+		events[i] = EventFromProto(event)
 	}
 	results, err := h.svc.PublishBatch(ctx, events)
 	if err != nil {
 		return nil, statusError(ctx, h.log, err)
 	}
-	out := make([]*pb.PublishResponse, len(results))
-	for i, r := range results {
-		out[i] = PublishResponse(r)
-	}
-	return &pb.PublishBatchResponse{Results: out}, nil
+	return PublishBatchResponse(results), nil
 }
 
 func (h *handler) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.GetStatusResponse, error) {
-	res, err := h.svc.GetStatus(ctx, req.GetEventId())
+	result, err := h.svc.GetStatus(ctx, req.GetEventId())
 	if err != nil {
 		return nil, statusError(ctx, h.log, err)
 	}
-	return &pb.GetStatusResponse{EventId: res.EventID, Deliveries: DeliveriesToProto(res.Deliveries)}, nil
+	return &pb.GetStatusResponse{EventId: result.EventID, Deliveries: DeliveriesToProto(result.Deliveries)}, nil
 }
 
 func statusError(ctx context.Context, log *slog.Logger, err error) error {
-	if m := apierr.Of(err); m.Log {
-		log.ErrorContext(ctx, "grpc request failed", "code", m.Code, "err", err)
+	if mapping := apierr.Of(err); mapping.Log {
+		log.ErrorContext(ctx, "grpc request failed", "code", mapping.Code, "err", err)
 	}
 	return toStatus(err)
 }
 
 func toStatus(err error) error {
-	m := apierr.Of(err)
-	return status.Error(m.GRPC, m.Message(err))
+	mapping := apierr.Of(err)
+	return status.Error(mapping.GRPC, mapping.Message(err))
 }

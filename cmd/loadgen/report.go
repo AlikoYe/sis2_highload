@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"slices"
@@ -21,6 +22,8 @@ var csvHeader = []string{
 	"conns", // appended later; readers must tolerate its absence in older CSVs
 }
 
+var serverCPUHeader = []string{"label", "server_cpu_ms", "duration_s"}
+
 type result struct {
 	cfg       config
 	rec       *recorder
@@ -34,32 +37,28 @@ type result struct {
 
 func (r result) rps() float64 { return float64(r.rec.ok) / r.cfg.duration.Seconds() }
 
+func itoa(v int64) string   { return strconv.FormatInt(v, 10) }
+func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }
+
 func (r result) row() []string {
-	h := r.rec.hist
-	i := func(v int64) string { return strconv.FormatInt(v, 10) }
-	f := func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }
-	q := func(p float64) string { return i(h.ValueAtQuantile(p)) }
+	hist := r.rec.hist
+	quantile := func(percent float64) string { return itoa(hist.ValueAtQuantile(percent)) }
 	return []string{
 		r.finished.UTC().Format(time.RFC3339), r.cfg.label, r.cfg.protocol, r.cfg.op, r.cfg.payload, r.cfg.store,
-		r.cfg.mode, strconv.Itoa(r.cfg.concurrency), f(r.cfg.rate), f(r.cfg.duration.Seconds()),
-		i(r.rec.ok + r.rec.errs), i(r.rec.ok), i(r.rec.errs), breakdown(r.rec.byCode), i(r.dropped), f(r.rps()),
-		f(h.Mean()), q(50), q(90), q(95), q(99), q(99.9), i(h.Max()),
-		i(r.attempts), i(r.retries), i(r.clientCPU.Milliseconds()),
+		r.cfg.mode, strconv.Itoa(r.cfg.concurrency), ftoa(r.cfg.rate), ftoa(r.cfg.duration.Seconds()),
+		itoa(r.rec.ok + r.rec.errs), itoa(r.rec.ok), itoa(r.rec.errs), breakdown(r.rec.byCode), itoa(r.dropped), ftoa(r.rps()),
+		ftoa(hist.Mean()), quantile(50), quantile(90), quantile(95), quantile(99), quantile(99.9), itoa(hist.Max()),
+		itoa(r.attempts), itoa(r.retries), itoa(r.clientCPU.Milliseconds()),
 		strconv.Itoa(r.cfg.conns),
 	}
 }
 
-func breakdown(m map[string]int64) string {
-	keys := slices.Sorted(func(yield func(string) bool) {
-		for k := range m {
-			if !yield(k) {
-				return
-			}
-		}
-	})
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = fmt.Sprintf("%s=%d", k, m[k])
+// breakdown formats error counts as "CODE=n;CODE=n", sorted by code.
+func breakdown(countByCode map[string]int64) string {
+	codes := slices.Sorted(maps.Keys(countByCode))
+	parts := make([]string, len(codes))
+	for i, code := range codes {
+		parts[i] = fmt.Sprintf("%s=%d", code, countByCode[code])
 	}
 	return strings.Join(parts, ";")
 }
@@ -70,17 +69,17 @@ func appendCSV(path string, header []string, rows ...[]string) error {
 	if err != nil {
 		return err
 	}
-	st, err := f.Stat()
+	info, err := f.Stat()
 	if err != nil {
 		f.Close()
 		return err
 	}
 	w := csv.NewWriter(f)
-	if st.Size() == 0 {
+	if info.Size() == 0 {
 		_ = w.Write(header)
 	}
-	for _, r := range rows {
-		_ = w.Write(r)
+	for _, row := range rows {
+		_ = w.Write(row)
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
@@ -91,8 +90,8 @@ func appendCSV(path string, header []string, rows ...[]string) error {
 }
 
 func (r result) summary(w io.Writer) {
-	h := r.rec.hist
-	ms := func(us int64) string {
+	hist := r.rec.hist
+	duration := func(us int64) string {
 		return (time.Duration(us) * time.Microsecond).Round(10 * time.Microsecond).String()
 	}
 	load := fmt.Sprintf("c=%d conns=%d", r.cfg.concurrency, r.cfg.conns)
@@ -103,8 +102,8 @@ func (r result) summary(w io.Writer) {
 	fmt.Fprintf(w, "  %.0f ok/s  ok=%d errors=%d [%s] dropped=%d  attempts=%d retries=%d\n",
 		r.rps(), r.rec.ok, r.rec.errs, breakdown(r.rec.byCode), r.dropped, r.attempts, r.retries)
 	fmt.Fprintf(w, "  latency p50=%s p90=%s p95=%s p99=%s p99.9=%s max=%s\n",
-		ms(h.ValueAtQuantile(50)), ms(h.ValueAtQuantile(90)), ms(h.ValueAtQuantile(95)),
-		ms(h.ValueAtQuantile(99)), ms(h.ValueAtQuantile(99.9)), ms(h.Max()))
+		duration(hist.ValueAtQuantile(50)), duration(hist.ValueAtQuantile(90)), duration(hist.ValueAtQuantile(95)),
+		duration(hist.ValueAtQuantile(99)), duration(hist.ValueAtQuantile(99.9)), duration(hist.Max()))
 	fmt.Fprintf(w, "  client cpu=%s", r.clientCPU.Round(time.Millisecond))
 	if r.serverCPU > 0 {
 		fmt.Fprintf(w, " server cpu=%s", r.serverCPU.Round(time.Millisecond))
@@ -122,34 +121,38 @@ func processCPU(pid int) (time.Duration, error) {
 }
 
 // parsePSTime parses ps "time" output: [[dd-]hh:]mm:ss[.cc].
-func parsePSTime(s string) (time.Duration, error) {
-	if s == "" {
+func parsePSTime(text string) (time.Duration, error) {
+	if text == "" {
 		return 0, errors.New("empty ps time")
 	}
-	var days int
-	if d, rest, ok := strings.Cut(s, "-"); ok {
-		n, err := strconv.Atoi(d)
+	var total time.Duration
+	clock := text
+	if daysPart, rest, ok := strings.Cut(text, "-"); ok {
+		days, err := strconv.Atoi(daysPart)
 		if err != nil {
-			return 0, fmt.Errorf("ps time %q: %w", s, err)
+			return 0, fmt.Errorf("ps time %q: %w", text, err)
 		}
-		days, s = n, rest
+		total, clock = time.Duration(days)*24*time.Hour, rest
 	}
-	parts := strings.Split(s, ":")
-	if len(parts) < 2 || len(parts) > 3 {
-		return 0, fmt.Errorf("ps time %q: unexpected format", s)
+
+	fields := strings.Split(clock, ":")
+	if len(fields) < 2 || len(fields) > 3 {
+		return 0, fmt.Errorf("ps time %q: unexpected format", text)
 	}
-	secs, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	seconds, err := strconv.ParseFloat(fields[len(fields)-1], 64)
 	if err != nil {
-		return 0, fmt.Errorf("ps time %q: %w", s, err)
+		return 0, fmt.Errorf("ps time %q: %w", text, err)
 	}
-	total := time.Duration(secs * float64(time.Second))
+	total += time.Duration(seconds * float64(time.Second))
+
+	// Fields left of the seconds, read right to left, are minutes then hours.
 	units := []time.Duration{time.Minute, time.Hour}
-	for i, j := len(parts)-2, 0; i >= 0; i, j = i-1, j+1 {
-		n, err := strconv.Atoi(parts[i])
+	for i, field := range slices.Backward(fields[:len(fields)-1]) {
+		n, err := strconv.Atoi(field)
 		if err != nil {
-			return 0, fmt.Errorf("ps time %q: %w", s, err)
+			return 0, fmt.Errorf("ps time %q: %w", text, err)
 		}
-		total += time.Duration(n) * units[j]
+		total += time.Duration(n) * units[len(fields)-2-i]
 	}
-	return total + time.Duration(days)*24*time.Hour, nil
+	return total, nil
 }

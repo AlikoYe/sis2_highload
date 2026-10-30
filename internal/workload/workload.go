@@ -29,44 +29,50 @@ const (
 	BatchSize         = 100
 	MediumPayloadSize = 500
 	LargePayloadSize  = 3584 // 3.5 KiB, under the 4 KiB validation limit
+
+	workloadUserID = 1000042
 )
 
 var occurredAt = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 // Event builds a single-event message of kind small, medium or large.
-func Event(k Kind, id string) domain.Event {
-	switch k {
+func Event(kind Kind, id string) domain.Event {
+	event := domain.Event{ID: id, Type: "order.shipped", UserID: workloadUserID, OccurredAt: occurredAt}
+	switch kind {
 	case Small:
-		return domain.Event{ID: id, Type: "auth.login_code", UserID: 1000042, Payload: map[string]string{"code": "483920"}, OccurredAt: occurredAt}
+		event.Type = "auth.login_code"
+		event.Payload = map[string]string{"code": "483920"}
 	case Medium:
-		return domain.Event{ID: id, Type: "order.shipped", UserID: 1000042, Payload: orderPayload(MediumPayloadSize), OccurredAt: occurredAt}
+		event.Payload = orderPayload(MediumPayloadSize)
 	case Large:
-		return domain.Event{ID: id, Type: "order.shipped", UserID: 1000042, Payload: orderPayload(LargePayloadSize), OccurredAt: occurredAt}
+		event.Payload = orderPayload(LargePayloadSize)
+	default:
+		panic(fmt.Sprintf("workload: no single event for kind %q", kind))
 	}
-	panic(fmt.Sprintf("workload: no single event for kind %q", k))
+	return event
 }
 
 // BatchEvents builds one small event per id.
 func BatchEvents(ids []string) []domain.Event {
-	es := make([]domain.Event, len(ids))
+	events := make([]domain.Event, len(ids))
 	for i, id := range ids {
-		es[i] = Event(Small, id)
+		events[i] = Event(Small, id)
 	}
-	return es
+	return events
 }
 
-func ParseKind(s string) (Kind, error) {
-	for _, k := range Kinds {
-		if string(k) == s {
-			return k, nil
+func ParseKind(name string) (Kind, error) {
+	for _, kind := range Kinds {
+		if string(kind) == name {
+			return kind, nil
 		}
 	}
-	return "", fmt.Errorf("unknown payload kind %q", s)
+	return "", fmt.Errorf("unknown payload kind %q", name)
 }
 
 // orderPayload is 8 realistic fields whose key+value bytes total exactly size.
 func orderPayload(size int) map[string]string {
-	p := map[string]string{
+	payload := map[string]string{
 		"order_id":           "ORD-2026-0001842",
 		"customer_name":      "Aigerim Sadykova",
 		"carrier":            "Kazpost Express",
@@ -76,70 +82,55 @@ func orderPayload(size int) map[string]string {
 		"support_url":        "https://shop.example.kz/help/orders/ORD-2026-0001842",
 	}
 	used := len("items")
-	for k, v := range p {
-		used += len(k) + len(v)
+	for key, value := range payload {
+		used += len(key) + len(value)
 	}
+	remaining := size - used
 	const item = "1x Wireless earbuds (black); 2x USB-C cable 1m; 1x Phone case, clear; "
-	p["items"] = strings.Repeat(item, (size-used)/len(item)+1)[:size-used]
-	return p
+	payload["items"] = strings.Repeat(item, remaining/len(item)+1)[:remaining]
+	return payload
 }
 
 // Result is the response the service returns for a freshly accepted event.
-func Result(e domain.Event) domain.Result {
-	channels, _ := service.Channels(e.Type)
-	ds := make([]domain.Delivery, len(channels))
+func Result(event domain.Event) domain.Result {
+	channels, _ := service.Channels(event.Type)
+	deliveries := make([]domain.Delivery, len(channels))
 	for i, ch := range channels {
-		ds[i] = domain.Delivery{EventID: e.ID, Channel: ch, Status: domain.StatusQueued}
+		deliveries[i] = domain.Delivery{EventID: event.ID, Channel: ch, Status: domain.StatusQueued}
 	}
-	return domain.NewResult(e.ID, ds)
+	return domain.NewResult(event.ID, deliveries)
 }
 
-func Results(es []domain.Event) []domain.Result {
-	rs := make([]domain.Result, len(es))
-	for i, e := range es {
-		rs[i] = Result(e)
+func Results(events []domain.Event) []domain.Result {
+	results := make([]domain.Result, len(events))
+	for i, event := range events {
+		results[i] = Result(event)
 	}
-	return rs
+	return results
 }
 
-func ProtoRequest(e domain.Event) *pb.PublishRequest {
-	return &pb.PublishRequest{Event: grpcapi.EventToProto(e)}
+func ProtoRequest(event domain.Event) *pb.PublishRequest {
+	return &pb.PublishRequest{Event: grpcapi.EventToProto(event)}
 }
 
-func ProtoBatchRequest(es []domain.Event) *pb.PublishBatchRequest {
-	req := &pb.PublishBatchRequest{Events: make([]*pb.Event, len(es))}
-	for i, e := range es {
-		req.Events[i] = grpcapi.EventToProto(e)
-	}
-	return req
+func ProtoBatchRequest(events []domain.Event) *pb.PublishBatchRequest {
+	return &pb.PublishBatchRequest{Events: grpcapi.EventsToProto(events)}
 }
 
-func ProtoResponse(r domain.Result) *pb.PublishResponse { return grpcapi.PublishResponse(r) }
+func ProtoResponse(result domain.Result) *pb.PublishResponse { return grpcapi.PublishResponse(result) }
 
-func ProtoBatchResponse(rs []domain.Result) *pb.PublishBatchResponse {
-	resp := &pb.PublishBatchResponse{Results: make([]*pb.PublishResponse, len(rs))}
-	for i, r := range rs {
-		resp.Results[i] = grpcapi.PublishResponse(r)
-	}
-	return resp
+func ProtoBatchResponse(results []domain.Result) *pb.PublishBatchResponse {
+	return grpcapi.PublishBatchResponse(results)
 }
 
-func JSONRequest(e domain.Event) httpapi.Event { return httpapi.EventFromDomain(e) }
+func JSONRequest(event domain.Event) httpapi.Event { return httpapi.EventFromDomain(event) }
 
-func JSONBatchRequest(es []domain.Event) httpapi.BatchRequest {
-	req := httpapi.BatchRequest{Events: make([]httpapi.Event, len(es))}
-	for i, e := range es {
-		req.Events[i] = httpapi.EventFromDomain(e)
-	}
-	return req
+func JSONBatchRequest(events []domain.Event) httpapi.BatchRequest {
+	return httpapi.BatchRequestFromDomain(events)
 }
 
-func JSONResponse(r domain.Result) httpapi.Result { return httpapi.ResultFromDomain(r) }
+func JSONResponse(result domain.Result) httpapi.Result { return httpapi.ResultFromDomain(result) }
 
-func JSONBatchResponse(rs []domain.Result) httpapi.BatchResponse {
-	resp := httpapi.BatchResponse{Results: make([]httpapi.Result, len(rs))}
-	for i, r := range rs {
-		resp.Results[i] = httpapi.ResultFromDomain(r)
-	}
-	return resp
+func JSONBatchResponse(results []domain.Result) httpapi.BatchResponse {
+	return httpapi.BatchResponseFromDomain(results)
 }

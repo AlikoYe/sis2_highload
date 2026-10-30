@@ -60,11 +60,11 @@ func codecCases() []codecCase {
 
 func benchProtoMarshal(b *testing.B, pick func(codecCase) proto.Message) {
 	for _, c := range codecCases() {
-		m := pick(c)
+		msg := pick(c)
 		b.Run(c.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := proto.Marshal(m); err != nil {
+				if _, err := proto.Marshal(msg); err != nil {
 					b.Fatal(err)
 				}
 			}

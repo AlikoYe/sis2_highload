@@ -18,28 +18,28 @@ var summaryHeader = []string{
 }
 
 // writeSummaryCSV writes one row per group for charting; server CPU is empty when unknown.
-func writeSummaryCSV(w io.Writer, gs []group) error {
+func writeSummaryCSV(w io.Writer, groups []group) error {
 	cw := csv.NewWriter(w)
 	if err := cw.Write(summaryHeader); err != nil {
 		return err
 	}
-	f := func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }
-	tri := func(s spread) []string { return []string{f(s.med), f(s.min), f(s.max)} }
-	for _, g := range gs {
+	ftoa := func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }
+	medMinMax := func(s spread) []string { return []string{ftoa(s.med), ftoa(s.min), ftoa(s.max)} }
+	for _, g := range groups {
 		row := []string{
-			g.variant, g.op, g.payload, g.store, g.mode, strconv.Itoa(g.concurrency), f(g.rate),
-			strconv.Itoa(g.conns), f(g.durationS), strconv.FormatBool(g.reliability), strconv.Itoa(g.reps),
+			g.variant, g.op, g.payload, g.store, g.mode, strconv.Itoa(g.concurrency), ftoa(g.rate),
+			strconv.Itoa(g.conns), ftoa(g.durationS), strconv.FormatBool(g.reliability), strconv.Itoa(g.reps),
 		}
-		row = append(row, tri(g.rps)...)
-		row = append(row, tri(g.p50)...)
-		row = append(row, tri(g.p95)...)
-		row = append(row, tri(g.p99)...)
+		row = append(row, medMinMax(g.rps)...)
+		row = append(row, medMinMax(g.p50)...)
+		row = append(row, medMinMax(g.p95)...)
+		row = append(row, medMinMax(g.p99)...)
 		if g.hasServerCPU {
-			row = append(row, tri(g.serverCPUus)...)
+			row = append(row, medMinMax(g.serverCPUus)...)
 		} else {
 			row = append(row, "", "", "")
 		}
-		row = append(row, tri(g.clientCPUus)...)
+		row = append(row, medMinMax(g.clientCPUus)...)
 		row = append(row, strconv.FormatInt(g.errors, 10), strconv.FormatInt(g.retries, 10), strconv.FormatInt(g.dropped, 10))
 		if err := cw.Write(row); err != nil {
 			return err
